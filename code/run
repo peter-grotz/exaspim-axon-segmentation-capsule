@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# exaSPIM TRAILMAP axon segmentation — Code Ocean entry point.
+#
+# Ordered parameters (all optional):
+#   1 ASSET       processed exaSPIM asset root
+#                 (default: s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_...)
+#   2 REGIONS     comma-separated CCF acronyms or IDs            (default: MD)
+#   3 LEVEL       fused.zarr pyramid level                        (default: 2)
+#   4 CROP_UM     cube side for a quick diagnostic; 0 = whole region (default: 0)
+#   5 TILE_SIZE   network input side, multiple of 8              (default: 160)
+#   6 BATCH_SIZE  tiles per GPU batch                            (default: 1)
+#
+# Outputs in /results:
+#   <subject>_<regions>_L<level>[_crop<um>]_axon_probability.zarr   uint8 p × 255, OME-NGFF
+#   qc/*_region_overlay.png, qc/*_prediction.png                     visual checks
+#   predict.log, pip_list.txt, nvidia_smi.txt, SOURCE_COMMIT          provenance
+set -euo pipefail
+
+ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
+REGIONS="${2:-MD}"
+LEVEL="${3:-2}"
+CROP_UM="${4:-0}"
+TILE_SIZE="${5:-160}"
+BATCH_SIZE="${6:-1}"
+
+CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESULTS=/results
+export PATH="/opt/venv/bin:${PATH}" XDG_CACHE_HOME=/opt/cache HF_HOME=/opt/hf-cache HF_HUB_OFFLINE=1
+
+# The package is vendored at an exact commit; its dependencies are already in the image.
+uv pip install --python /opt/venv/bin/python --no-deps --no-cache --quiet \
+    "${CODE_DIR}/exaspim-axon-segmentation"
+
+mkdir -p "${RESULTS}/qc"
+cp "${CODE_DIR}/exaspim-axon-segmentation/SOURCE_COMMIT" "${RESULTS}/"
+uv pip list --python /opt/venv/bin/python > "${RESULTS}/pip_list.txt"
+nvidia-smi > "${RESULTS}/nvidia_smi.txt" 2>&1 || echo "nvidia-smi unavailable" > "${RESULTS}/nvidia_smi.txt"
+
+subject="$(basename "${ASSET%/}" | cut -d_ -f2)"
+tag="${subject}_${REGIONS//,/+}_L${LEVEL}"
+region_args=()
+IFS=, read -ra region_list <<< "${REGIONS}"
+for region in "${region_list[@]}"; do region_args+=(-r "${region}"); done
+crop_args=()
+if [[ "${CROP_UM}" != "0" ]]; then
+    crop_args=(--crop-um "${CROP_UM}")
+    tag="${tag}_crop${CROP_UM}"
+fi
+output="${RESULTS}/${tag}_axon_probability.zarr"
+
+echo "=== ${ASSET} · regions ${REGIONS} · level ${LEVEL} · tile ${TILE_SIZE} × batch ${BATCH_SIZE}"
+exaspim-axon -v qc-region "${ASSET}" "${region_args[@]}" \
+    --out "${RESULTS}/qc/${tag}_region_overlay.png"
+exaspim-axon -v predict "${ASSET}" "${region_args[@]}" --out "${output}" --level "${LEVEL}" \
+    --tile-size "${TILE_SIZE}" --batch-size "${BATCH_SIZE}" --device cuda "${crop_args[@]}" \
+    2>&1 | tee "${RESULTS}/predict.log"
+exaspim-axon -v qc-predictions "${output}" -l "trailmap axon" \
+    --out "${RESULTS}/qc/${tag}_prediction.png"
+echo "=== done: ${output}"
