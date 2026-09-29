@@ -9,6 +9,9 @@
 #   4 CROP_UM     cube side for a quick diagnostic; 0 = whole region (default: 0)
 #   5 TILE_SIZE   network input side, multiple of 8              (default: 160)
 #   6 BATCH_SIZE  tiles per GPU batch                            (default: 1)
+#   7 WEIGHTS     registered weights name or a .safetensors path, e.g. from an attached
+#                 model asset: /data/trailmap_finetune_v1/best.safetensors
+#                                                               (default: trailmap-axon-210409)
 #
 # Outputs in /results:
 #   <subject>_<regions>_L<level>[_crop<um>]_axon_probability.zarr   uint8 p × 255, OME-NGFF
@@ -68,7 +71,7 @@ if [[ "${MODE}" == "finetune" ]]; then
     ASSET="s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36"
     REGIONS="MD"; LEVEL="2"; CROP_UM="0"; TILE_SIZE="160"; BATCH_SIZE="1"
 else
-    WEIGHTS="trailmap-axon-210409"
+    WEIGHTS="${7:-trailmap-axon-210409}"
 fi
 
 subject="$(basename "${ASSET%/}" | cut -d_ -f2)"
