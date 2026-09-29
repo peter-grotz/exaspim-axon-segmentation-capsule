@@ -3,9 +3,9 @@
 set -euxo pipefail
 
 export UV_PYTHON_INSTALL_DIR=/opt/python XDG_CACHE_HOME=/opt/cache HF_HOME=/opt/hf-cache
-uv venv --python 3.12 /opt/venv
+uv venv --python 3.12 /opt/axon-venv
 
-# Exact pins exported from uv.lock at 24b8d7fc22b4.
+# Exact pins exported from uv.lock at 9372529bbd71.
 cat > /tmp/requirements.txt <<'REQ'
 aiobotocore==3.9.1
 aiohappyeyeballs==2.7.1
@@ -97,11 +97,11 @@ wrapt==2.5.0
 yarl==1.25.1
 zarr==3.4.0
 REQ
-uv pip install --python /opt/venv/bin/python --no-cache -r /tmp/requirements.txt
+uv pip install --python /opt/axon-venv/bin/python --no-cache -r /tmp/requirements.txt
 rm /tmp/requirements.txt
 
 # Bake the pretrained weights and the CCF ontology into the image: runs need only S3 access.
-/opt/venv/bin/python - <<'PY'
+/opt/axon-venv/bin/python - <<'PY'
 from pathlib import Path
 
 import requests
@@ -114,4 +114,4 @@ response = requests.get("http://api.brain-map.org/api/v2/structure_graph_downloa
 response.raise_for_status()
 ontology.write_text(response.text)
 PY
-chmod -R a+rX /opt/cache /opt/hf-cache /opt/venv /opt/python
+chmod -R a+rX /opt/cache /opt/hf-cache /opt/axon-venv /opt/python

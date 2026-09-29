@@ -25,15 +25,15 @@ BATCH_SIZE="${6:-1}"
 
 CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESULTS=/results
-export PATH="/opt/venv/bin:${PATH}" XDG_CACHE_HOME=/opt/cache HF_HOME=/opt/hf-cache HF_HUB_OFFLINE=1
+export PATH="/opt/axon-venv/bin:${PATH}" XDG_CACHE_HOME=/opt/cache HF_HOME=/opt/hf-cache HF_HUB_OFFLINE=1
 
 # The package is vendored at an exact commit; its dependencies are already in the image.
-uv pip install --python /opt/venv/bin/python --no-deps --no-cache --quiet \
+uv pip install --python /opt/axon-venv/bin/python --no-deps --no-cache --quiet \
     "${CODE_DIR}/exaspim-axon-segmentation"
 
 mkdir -p "${RESULTS}/qc"
 cp "${CODE_DIR}/exaspim-axon-segmentation/SOURCE_COMMIT" "${RESULTS}/"
-uv pip list --python /opt/venv/bin/python > "${RESULTS}/pip_list.txt"
+uv pip list --python /opt/axon-venv/bin/python > "${RESULTS}/pip_list.txt"
 nvidia-smi > "${RESULTS}/nvidia_smi.txt" 2>&1 || echo "nvidia-smi unavailable" > "${RESULTS}/nvidia_smi.txt"
 
 subject="$(basename "${ASSET%/}" | cut -d_ -f2)"
