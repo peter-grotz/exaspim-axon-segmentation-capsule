@@ -21,10 +21,12 @@ RegionOpt = Annotated[list[str], typer.Option("--region", "-r", help="CCF ID or 
 @app.callback()
 def main(verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False) -> None:
     """TRAILMAP axon segmentation for exaSPIM."""
+    # --verbose raises only this package's loggers; DEBUG on the root logger floods the log with
+    # botocore/s3fs request traces (18 MB for a 1-minute run).
     logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    log.setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
 @app.command("qc-region")
