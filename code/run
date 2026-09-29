@@ -23,7 +23,9 @@
 set -euo pipefail
 
 # First parameter selects the mode; "predict" (default) keeps the ordered parameters below.
-#   finetune [STEPS] [MAX_MINUTES] [HOLDOUT_BRAIN]   train, then predict 851474 MD with best weights
+#   finetune [STEPS] [MAX_MINUTES] [HOLDOUT_BRAIN] [ENVELOPE_UM]
+#            train, then predict 851474 MD with the best weights; 822178 MD is labelled only within
+#            ENVELOPE_UM (default 50) of its traces, blocks are labelled whole
 MODE="predict"
 if [[ "${1:-}" == "predict" || "${1:-}" == "finetune" ]]; then MODE="$1"; shift; fi
 
@@ -51,14 +53,16 @@ if [[ "${MODE}" == "finetune" ]]; then
     STEPS="${1:-4000}"
     MAX_MINUTES="${2:-40}"
     HOLDOUT="${3:-744783}"
+    ENVELOPE_UM="${4:-50}"
     TRAIN_ASSET="s3://aind-open-data/exaSPIM_822178_2026-04-03_19-07-07_processed_2026-04-16_13-16-45"
     BLOCKS="gs://allen-nd-goog/from_aind/training-data_2025-07-30"
     SCRATCH="$(mktemp -d)"
-    echo "=== finetune · ${STEPS} steps / ${MAX_MINUTES} min · holdout brain ${HOLDOUT}"
+    echo "=== finetune · ${STEPS} steps / ${MAX_MINUTES} min · holdout brain ${HOLDOUT} · envelope ${ENVELOPE_UM} um"
     exaspim-axon -v make-labels "${TRAIN_ASSET}" -r MD \
         --swc "${CODE_DIR}/traces/822178/N003-822178-JM.swc" \
         --swc "${CODE_DIR}/traces/822178/Neuron2_snapped_0.748um.swc" \
-        --out "${SCRATCH}/822178_MD_L2" 2>&1 | tee "${RESULTS}/make_labels.log"
+        --envelope-um "${ENVELOPE_UM}" --out "${SCRATCH}/822178_MD_L2" \
+        2>&1 | tee "${RESULTS}/make_labels.log"
     exaspim-axon -v make-block-volumes "${BLOCKS}" --out "${SCRATCH}/blocks" \
         2>&1 | tee "${RESULTS}/make_block_volumes.log"
     volumes=(--volume "${SCRATCH}/822178_MD_L2")

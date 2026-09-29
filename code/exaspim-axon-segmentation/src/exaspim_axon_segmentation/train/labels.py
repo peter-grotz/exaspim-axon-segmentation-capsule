@@ -50,6 +50,10 @@ class LabelConfig:
         point (robust to traces sitting a voxel off-center) and background is the median voxel.
     smooth_um : float
         Light smoothing before the brightness test, so single noisy voxels are not negatives.
+    envelope_um : float, optional
+        Only label voxels within this distance of a trace; everything farther is ``IGNORE``.
+        Use when tracing is complete only near the traced cells (untraced neurons elsewhere in
+        the region would otherwise be taught as background).
     """
 
     axon_radius_um: float = 2.0
@@ -57,6 +61,7 @@ class LabelConfig:
     negative_clearance_um: float = 8.0
     negative_fraction: float = 0.5
     smooth_um: float = 1.5
+    envelope_um: float | None = None
 
 
 def trace_distance_um(
@@ -151,9 +156,12 @@ def build_labels(
     """
     tf = image.transforms[level]
     scale = np.asarray(tf.scale)
-    halo = np.ceil(
-        max(config.negative_clearance_um, config.edge_radius_um, 3 * config.smooth_um) / scale
-    ).astype(int)
+    reach = max(config.negative_clearance_um, config.edge_radius_um, 3 * config.smooth_um)
+    if config.envelope_um is not None:
+        reach = max(reach, config.envelope_um)
+    halo = np.ceil(reach / scale).astype(int)
+    if config.envelope_um is not None:
+        inside = inside.copy()
     raw = image.read(level, box)
     smooth = np.zeros(box.shape, dtype=np.float32)
     ring = np.full(box.shape, 3, dtype=np.uint8)  # 0 axon, 1 edge, 2 too close for negative, 3 far
@@ -172,6 +180,8 @@ def build_labels(
         distance = trace_distance_um(traces_zyx_um, tf.scale, tf.translation, global_outer)[inner]
         block = raw[outer.slices].astype(np.float32)
         smooth[core.slices] = gaussian_filter(block, config.smooth_um / scale)[inner]
+        if config.envelope_um is not None:
+            inside[core.slices] &= distance <= config.envelope_um
         r = ring[core.slices]
         r[distance < config.negative_clearance_um] = 2
         r[distance <= config.edge_radius_um] = 1

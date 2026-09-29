@@ -161,11 +161,16 @@ def make_labels(
     ],
     out: Annotated[Path, typer.Option(help="Output directory (raw.zarr + labels.zarr)")],
     level: Annotated[int, typer.Option(help="fused.zarr pyramid level (match inference)")] = 2,
+    envelope_um: Annotated[
+        float | None, typer.Option(help="Label only within this distance of the traces")
+    ] = None,
 ) -> None:
     """Build a training volume from complete SWC traces of a region's traced lobe."""
+    from exaspim_axon_segmentation.train.labels import LabelConfig
     from exaspim_axon_segmentation.train.volume import make_training_volume
 
-    info = make_training_volume(asset, region, swc, out, level=level)
+    config = LabelConfig(envelope_um=envelope_um)
+    info = make_training_volume(asset, region, swc, out, level=level, config=config)
     log.info("Labels: %s", info["voxels"])
 
 
@@ -224,3 +229,24 @@ def make_block_volumes_cmd(
         root, out, token=gcs_token(env=key_env, path=key_file), level=level
     )
     log.info("Built %d block volumes from %s", len(records), sorted({r["brain"] for r in records}))
+
+
+@app.command("qc-traces")
+def qc_traces(
+    prediction: Annotated[list[str], typer.Argument(help="Probability OME-Zarrs (same region)")],
+    swc: Annotated[list[Path], typer.Option("--swc", help="Complete traces; repeat")],
+    out: Annotated[Path, typer.Option(help="Output PNG")] = Path("qc/traces.png"),
+    label: Annotated[list[str] | None, typer.Option("--label", "-l", help="Per prediction")] = None,
+    val_fraction: Annotated[
+        float, typer.Option(help="Held-out share of trace points (by x)")
+    ] = 0.2,
+) -> None:
+    """Score predictions against complete traces (recall along traces, precision near traces)."""
+    from exaspim_axon_segmentation.qc.traces import render_trace_comparison
+
+    labels = label or [Path(p).stem for p in prediction]
+    scores = render_trace_comparison(prediction, labels, swc, out, val_fraction=val_fraction)
+    for name, sc in zip(labels, scores, strict=True):
+        for s in sc:
+            log.info("%s · %s", name, s.text())
+    log.info("Wrote %s", out)

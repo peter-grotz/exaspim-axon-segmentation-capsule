@@ -19,6 +19,7 @@ dependencies = [
     "s3fs>=2025.3",
     "safetensors>=0.5",
     "scikit-image>=0.24",
+    "skan>=0.12",
     "torch>=2.6",
     "typer>=0.12",
     "zarr>=3.1,<4",
