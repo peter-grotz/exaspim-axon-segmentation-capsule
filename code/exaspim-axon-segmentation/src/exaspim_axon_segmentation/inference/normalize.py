@@ -53,19 +53,43 @@ def estimate_scaling(
         return IntensityScaling(offset=0.0, scale=UINT16_MAX / config.gain)
     if config.mode == "range":
         return IntensityScaling(offset=config.low, scale=config.high - config.low)
-    samples = _sample_region(image, level, roi, config).astype(np.float64)
+    return scaling_from_samples(_sample_region(image, level, roi, config), config)
+
+
+def estimate_scaling_array(
+    raw: NDArray, inside: NDArray[np.bool_], config: NormalizationConfig
+) -> IntensityScaling:
+    """Estimate :func:`estimate_scaling` from patches of an in-memory volume inside a mask."""
+    rng = np.random.default_rng(config.seed)
+    candidates = np.argwhere(inside[::4, ::4, ::4]) * 4
+    picks = candidates[rng.choice(len(candidates), size=config.n_samples)]
+    half = config.sample_size // 2
+    blocks = [
+        raw[tuple(slice(max(c - half, 0), c + half) for c in center)].ravel() for center in picks
+    ]
+    return scaling_from_samples(np.concatenate(blocks), config)
+
+
+def scaling_from_samples(samples: NDArray, config: NormalizationConfig) -> IntensityScaling:
+    """Foreground-mode scaling from sampled raw voxels (see :class:`NormalizationConfig`)."""
+    samples = samples.astype(np.float64)
     background = float(np.median(samples))
     sigma = 1.4826 * float(np.median(np.abs(samples - background)))
     threshold = background + max(config.foreground_mads * sigma, config.foreground_min_counts)
     foreground = samples[samples > threshold]
     if foreground.size == 0:
         raise ValueError(f"No voxels above {threshold:.1f} counts in {config.n_samples} samples")
-    signal = float(np.median(foreground)) - background
+    offset = background
+    if config.floor_percentile is not None:
+        offset = max(background, float(np.percentile(samples, config.floor_percentile)))
+    signal = float(np.median(foreground)) - offset
+    if signal <= 0:
+        raise ValueError(f"Noise floor {offset:.1f} is above the foreground median")
     log.info(
-        "Background %.1f counts (sd %.1f); %d foreground voxels, median %.1f counts",
-        background, sigma, foreground.size, signal + background,
+        "Background %.1f counts (sd %.1f), offset %.1f; %d foreground voxels, median %.1f counts",
+        background, sigma, offset, foreground.size, signal + offset,
     )  # fmt: skip
-    return IntensityScaling(offset=background, scale=signal / config.foreground_level)
+    return IntensityScaling(offset=offset, scale=signal / config.foreground_level)
 
 
 def _sample_region(

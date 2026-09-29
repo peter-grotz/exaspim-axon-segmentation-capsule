@@ -64,11 +64,15 @@ class NgffImage:
         Local path or ``s3://`` URI of the multiscale group.
     anon : bool, default True
         Use anonymous S3 access (sufficient for ``aind-open-data``).
+    storage_options : dict, optional
+        fsspec options that override the default (e.g. ``{"token": ...}`` for ``gs://``).
     """
 
-    def __init__(self, uri: str, *, anon: bool = True) -> None:
+    def __init__(self, uri: str, *, anon: bool = True, storage_options: dict | None = None) -> None:
         self.uri = uri.rstrip("/")
-        options = {"anon": anon} if self.uri.startswith("s3://") else None
+        options = storage_options
+        if options is None and self.uri.startswith("s3://"):
+            options = {"anon": anon}
         self._group = zarr.open_group(self.uri, mode="r", storage_options=options)
         multiscale = self._group.attrs["multiscales"][0]
         axes = [axis["name"] for axis in multiscale["axes"]]

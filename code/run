@@ -12,9 +12,17 @@
 #
 # Outputs in /results:
 #   <subject>_<regions>_L<level>[_crop<um>]_axon_probability.zarr   uint8 p × 255, OME-NGFF
-#   qc/*_region_overlay.png, qc/*_prediction.png                     visual checks
+#   <subject>_<regions>_L<level>[_crop<um>]_axon_categories.zarr    uint8 cleanup category per voxel
+#                                                                    (1 kept, 2 no core, 3 too small,
+#                                                                     4 soma-connected)
+#   qc/*_region_overlay.png, qc/*_prediction.png, qc/*_cleanup.png   visual checks
 #   predict.log, pip_list.txt, nvidia_smi.txt, SOURCE_COMMIT          provenance
 set -euo pipefail
+
+# First parameter selects the mode; "predict" (default) keeps the ordered parameters below.
+#   finetune [STEPS] [MAX_MINUTES] [HOLDOUT_BRAIN]   train, then predict 851474 MD with best weights
+MODE="predict"
+if [[ "${1:-}" == "predict" || "${1:-}" == "finetune" ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -36,6 +44,33 @@ cp "${CODE_DIR}/exaspim-axon-segmentation/SOURCE_COMMIT" "${RESULTS}/"
 uv pip list --python /opt/axon-venv/bin/python > "${RESULTS}/pip_list.txt"
 nvidia-smi > "${RESULTS}/nvidia_smi.txt" 2>&1 || echo "nvidia-smi unavailable" > "${RESULTS}/nvidia_smi.txt"
 
+if [[ "${MODE}" == "finetune" ]]; then
+    STEPS="${1:-4000}"
+    MAX_MINUTES="${2:-40}"
+    HOLDOUT="${3:-744783}"
+    TRAIN_ASSET="s3://aind-open-data/exaSPIM_822178_2026-04-03_19-07-07_processed_2026-04-16_13-16-45"
+    BLOCKS="gs://allen-nd-goog/from_aind/training-data_2025-07-30"
+    SCRATCH="$(mktemp -d)"
+    echo "=== finetune · ${STEPS} steps / ${MAX_MINUTES} min · holdout brain ${HOLDOUT}"
+    exaspim-axon -v make-labels "${TRAIN_ASSET}" -r MD \
+        --swc "${CODE_DIR}/traces/822178/N003-822178-JM.swc" \
+        --swc "${CODE_DIR}/traces/822178/Neuron2_snapped_0.748um.swc" \
+        --out "${SCRATCH}/822178_MD_L2" 2>&1 | tee "${RESULTS}/make_labels.log"
+    exaspim-axon -v make-block-volumes "${BLOCKS}" --out "${SCRATCH}/blocks" \
+        2>&1 | tee "${RESULTS}/make_block_volumes.log"
+    volumes=(--volume "${SCRATCH}/822178_MD_L2")
+    for block in "${SCRATCH}"/blocks/block_*; do volumes+=(--volume "${block}"); done
+    exaspim-axon -v finetune "${volumes[@]}" --out "${RESULTS}/finetune" --holdout-brain "${HOLDOUT}" \
+        --steps "${STEPS}" --max-minutes "${MAX_MINUTES}" --device cuda \
+        2>&1 | tee "${RESULTS}/finetune.log"
+    WEIGHTS="${RESULTS}/finetune/best.safetensors"
+    # Evaluate on the unseen brain used before: full MD of 851474 with the fine-tuned weights.
+    ASSET="s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36"
+    REGIONS="MD"; LEVEL="2"; CROP_UM="0"; TILE_SIZE="160"; BATCH_SIZE="1"
+else
+    WEIGHTS="trailmap-axon-210409"
+fi
+
 subject="$(basename "${ASSET%/}" | cut -d_ -f2)"
 tag="${subject}_${REGIONS//,/+}_L${LEVEL}"
 region_args=()
@@ -47,13 +82,17 @@ if [[ "${CROP_UM}" != "0" ]]; then
     tag="${tag}_crop${CROP_UM}"
 fi
 output="${RESULTS}/${tag}_axon_probability.zarr"
+categories="${RESULTS}/${tag}_axon_categories.zarr"
 
 echo "=== ${ASSET} · regions ${REGIONS} · level ${LEVEL} · tile ${TILE_SIZE} × batch ${BATCH_SIZE}"
 exaspim-axon -v qc-region "${ASSET}" "${region_args[@]}" \
     --out "${RESULTS}/qc/${tag}_region_overlay.png"
 exaspim-axon -v predict "${ASSET}" "${region_args[@]}" --out "${output}" --level "${LEVEL}" \
-    --tile-size "${TILE_SIZE}" --batch-size "${BATCH_SIZE}" --device cuda "${crop_args[@]}" \
+    --tile-size "${TILE_SIZE}" --batch-size "${BATCH_SIZE}" --device cuda --weights "${WEIGHTS}" \
+    "${crop_args[@]}" \
     2>&1 | tee "${RESULTS}/predict.log"
-exaspim-axon -v qc-predictions "${output}" -l "trailmap axon" \
+exaspim-axon -v qc-predictions "${output}" -l "${MODE} weights" \
     --out "${RESULTS}/qc/${tag}_prediction.png"
+exaspim-axon -v cleanup "${output}" --out "${categories}" 2>&1 | tee "${RESULTS}/cleanup.log"
+exaspim-axon -v qc-cleanup "${output}" "${categories}" --out "${RESULTS}/qc/${tag}_cleanup.png"
 echo "=== done: ${output}"

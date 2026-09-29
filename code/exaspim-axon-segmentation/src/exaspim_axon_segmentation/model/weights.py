@@ -76,3 +76,14 @@ def pretrained(name: str = "trailmap-axon-210409", cache_dir: Path | None = None
     except KeyError:
         raise KeyError(f"Unknown weights {name!r}; available: {sorted(REGISTRY)}") from None
     return weights.load(cache_dir)
+
+
+def load_model(spec: str) -> TrailmapUNet3D:
+    """Load a registered pretrained model by name, or a fine-tuned ``.safetensors`` checkpoint."""
+    if spec.endswith(".safetensors"):
+        from safetensors.torch import load_file
+
+        model = TrailmapUNet3D()
+        model.load_state_dict(load_file(spec))
+        return model.eval()
+    return pretrained(spec)

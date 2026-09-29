@@ -23,7 +23,7 @@ from exaspim_axon_segmentation.inference.predict import (
 from exaspim_axon_segmentation.inference.tiling import Tile, plan_tiles
 from exaspim_axon_segmentation.io import Box, CcfOntology, ExaspimAsset, RegionRoi
 from exaspim_axon_segmentation.io.writer import create_ngff_array
-from exaspim_axon_segmentation.model import REGISTRY
+from exaspim_axon_segmentation.model import REGISTRY, load_model
 
 log = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def predict_region(
     device = resolve_device(config.device)
     precision = resolve_precision(config.precision)
     log.info("Device %s, precision %s", device, precision)
-    model = REGISTRY[config.weights].load()
+    model = load_model(config.weights)
     predictor = TilePredictor(
         model, device, precision, compile=config.compile, allow_tf32=config.allow_tf32
     )
@@ -138,7 +138,11 @@ def _provenance(
     config: InferenceConfig,
     scaling: IntensityScaling,
 ) -> dict:
-    weights = REGISTRY[config.weights]
+    if config.weights in REGISTRY:
+        w = REGISTRY[config.weights]
+        weights = {k: getattr(w, k) for k in ("name", "repo_id", "filename", "revision", "sha256")}
+    else:
+        weights = {"checkpoint": config.weights, "sha256": _sha256(config.weights)}
     return {
         "version": __version__,
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -148,12 +152,16 @@ def _provenance(
         "level": config.level,
         "region_box": {"start": list(plan.region.start), "stop": list(plan.region.stop)},
         "config": config.model_dump(mode="json"),
-        "weights": {
-            "name": weights.name,
-            "repo_id": weights.repo_id,
-            "filename": weights.filename,
-            "revision": weights.revision,
-            "sha256": weights.sha256,
-        },
+        "weights": weights,
         "scaling": scaling.as_dict(),
     }
+
+
+def _sha256(path: str) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 24), b""):
+            digest.update(block)
+    return digest.hexdigest()

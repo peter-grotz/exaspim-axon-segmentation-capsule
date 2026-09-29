@@ -86,7 +86,10 @@ def render_prediction_comparison(
     n_slabs : int
         Number of evenly spaced slabs.
     """
-    runs = [PredictionRun.open(u, lab) for u, lab in zip(uris, labels or [None] * len(uris))]
+    runs = [
+        PredictionRun.open(u, lab)
+        for u, lab in zip(uris, labels or [None] * len(uris), strict=True)
+    ]
     ref = runs[0]
     for run in runs[1:]:
         if run.region != ref.region or run.provenance["asset"] != ref.provenance["asset"]:
