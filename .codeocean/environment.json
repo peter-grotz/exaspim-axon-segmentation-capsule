@@ -1,0 +1,10 @@
+{
+	"version": 1,
+	"base_image": "codeocean/cuda12-base-uv:main-5692e50",
+	"post_install": true,
+	"options": {
+		"registry_host_arg": true,
+		"git_ask_pass": true,
+		"mount_secrets": true
+	}
+}
