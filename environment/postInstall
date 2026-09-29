@@ -5,7 +5,7 @@ set -euxo pipefail
 export UV_PYTHON_INSTALL_DIR=/opt/python XDG_CACHE_HOME=/opt/cache HF_HOME=/opt/hf-cache
 uv venv --python 3.12 /opt/axon-venv
 
-# Exact pins exported from uv.lock at 4b23d7767f16.
+# Exact pins exported from uv.lock at abcfbdfd04ec.
 cat > /tmp/requirements.txt <<'REQ'
 aiobotocore==3.9.1
 aiohappyeyeballs==2.7.1
