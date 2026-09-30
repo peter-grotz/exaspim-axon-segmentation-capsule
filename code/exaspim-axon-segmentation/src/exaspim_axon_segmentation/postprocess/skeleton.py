@@ -115,6 +115,8 @@ class AxonSkeleton:
         Settings used.
     filled : numpy.ndarray of bool, shape (n,)
         Nodes added by gap bridging / connection rather than thinning.
+    node_types : numpy.ndarray of int, shape (n,), optional
+        SWC type per node (2 axon, 3 dendrite); undefined (0) when not set.
     """
 
     voxels: NDArray[np.bool_]
@@ -122,6 +124,16 @@ class AxonSkeleton:
     edges: NDArray[np.int64]
     config: SkeletonConfig
     filled: NDArray[np.bool_]
+    node_types: NDArray[np.int64] | None = None
+
+    def subset(self, keep: NDArray[np.bool_]) -> AxonSkeleton:
+        """Return the nodes where ``keep`` is set and the edges between them (same voxels)."""
+        remap = np.full(len(keep), -1, dtype=np.int64)
+        remap[keep] = np.arange(int(keep.sum()))
+        e = remap[self.edges]
+        types = None if self.node_types is None else self.node_types[keep]
+        return AxonSkeleton(self.voxels, self.coordinates_um[keep], e[(e >= 0).all(axis=1)],
+                            self.config, self.filled[keep], types)  # fmt: skip
 
     @property
     def filled_length_um(self) -> float:
@@ -169,8 +181,8 @@ class AxonSkeleton:
         """SWC forest of the given nodes (default: all), one root per connected piece.
 
         Nodes are ordered breadth-first from an end point of each piece, so every parent precedes
-        its children and ids run 1..n. Node type is 0 (undefined) and radius 1.0, as Horta writes
-        them; the network does not distinguish axon from dendrite yet.
+        its children and ids run 1..n. Node type is ``node_types`` (0, undefined, if unset) and
+        radius 1.0, as Horta writes them.
         """
         nodes = np.arange(len(self.coordinates_um)) if nodes is None else np.asarray(nodes)
         local = np.full(len(self.coordinates_um), -1, dtype=np.int64)
@@ -192,9 +204,12 @@ class AxonSkeleton:
         ids = np.empty(len(nodes), dtype=np.int64)
         ids[order] = np.arange(1, len(nodes) + 1)
         parents = np.where(parent[order] >= 0, ids[np.maximum(parent[order], 0)], -1)
+        types = np.zeros(len(nodes), dtype=np.int64)
+        if self.node_types is not None:
+            types = self.node_types[nodes[order]]
         return Swc(
             ids=ids[order],
-            types=np.zeros(len(nodes), dtype=np.int64),
+            types=types,
             xyz_um=self.coordinates_um[nodes[order]][:, ::-1],
             radius=np.ones(len(nodes)),
             parents=parents,

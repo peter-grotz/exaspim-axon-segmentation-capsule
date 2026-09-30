@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
 import zarr
 from numpy.typing import NDArray
+from scipy.spatial import cKDTree
 
 from exaspim_axon_segmentation.inference.pipeline import PROVENANCE_ATTR, prediction_roi
 from exaspim_axon_segmentation.io import Box, ExaspimAsset
 from exaspim_axon_segmentation.io.writer import create_ngff_array
 from exaspim_axon_segmentation.postprocess.cleanup import Category, CleanupConfig, cleanup
+from exaspim_axon_segmentation.postprocess.dendrites import DendriteConfig, label_dendrites
 from exaspim_axon_segmentation.postprocess.skeleton import SkeletonConfig, skeletonize_probability
 from exaspim_axon_segmentation.postprocess.somata import load_somata
 
@@ -70,6 +72,7 @@ def skeletonize_prediction(
     crop: Box | None = None,
     swc_prefix: str | None = None,
     region_growth: float | None = None,
+    dendrites: DendriteConfig | None = None,
 ) -> dict:
     """Skeletonize a probability output within its (grown) region.
 
@@ -91,7 +94,12 @@ def skeletonize_prediction(
         File name prefix of the per-piece SWCs (default ``<subject>_<regions>``).
     region_growth : float, optional
         Region growth to apply instead of the one recorded with the prediction.
+    dendrites : DendriteConfig, optional
+        Rules separating dendrites of detected somata from axon candidates. When the asset has
+        soma detections, nodes get SWC type 3 (dendrite) or 2 (axon candidate) and the axon
+        candidates are also written on their own (``axon_candidates.swc``, ``axon_swc/``).
     """
+    dendrites = dendrites or DendriteConfig()
     group = zarr.open_group(prediction_uri, mode="r")
     provenance = dict(group.attrs[PROVENANCE_ATTR])
     asset = ExaspimAsset(provenance["asset"])
@@ -123,8 +131,24 @@ def skeletonize_prediction(
         else None
     )
     out_dir.mkdir(parents=True, exist_ok=True)
-    skeleton.write_swc(out_dir / "skeleton.swc")
     prefix = swc_prefix or f"{asset.subject_id}_{'+'.join(provenance['regions'])}"
+    somata = _somata_um(asset)
+    if somata is not None and len(skeleton.coordinates_um):
+        # only somata whose dendritic field reaches the skeleton matter (and are reported)
+        near = cKDTree(skeleton.coordinates_um).query(somata)[0] <= dendrites.field_um
+        somata = somata[near]
+    if somata is not None:
+        dendrite = label_dendrites(skeleton.coordinates_um, skeleton.edges, somata, dendrites)
+        skeleton = replace(skeleton, node_types=np.where(dendrite, SWC_DENDRITE, SWC_AXON))
+        axon = skeleton.subset(~dendrite)
+        summary["dendrites"] = asdict(dendrites) | {
+            "somata": len(somata),
+            "dendrite_um": skeleton.length_um - axon.length_um - _cut_um(skeleton, dendrite),
+            "axon_candidate_um": axon.length_um,
+        }
+        axon.write_swc(out_dir / "axon_candidates.swc")
+        summary["axon_candidate_pieces"] = axon.write_pieces(out_dir / "axon_swc", f"{prefix}_axon")
+    skeleton.write_swc(out_dir / "skeleton.swc")
     summary["pieces"] = skeleton.write_pieces(out_dir / "swc", prefix)
     array = create_ngff_array(
         str(out_dir / "skeleton.zarr"), source=grid, region=sub, chunks=(128, 128, 128),
@@ -163,3 +187,22 @@ def skeletonize_around(
     return skeletonize_prediction(
         prediction_uri, out_dir, config, crop=Box.from_arrays(start, stop), swc_prefix=swc_prefix
     )
+
+
+SWC_AXON, SWC_DENDRITE = 2, 3
+
+
+def _somata_um(asset: ExaspimAsset) -> NDArray | None:
+    """Return detected soma centres (z, y, x µm), or None when the asset has none."""
+    try:
+        return np.array([s.center_um for s in load_somata(asset)]).reshape(-1, 3)
+    except (FileNotFoundError, OSError, KeyError, ValueError) as error:
+        log.warning("No soma detections (%s); nodes stay type 0", error)
+        return None
+
+
+def _cut_um(skeleton, dendrite: NDArray[np.bool_]) -> float:
+    """Length of edges joining a dendrite node to an axon-candidate node."""
+    e = skeleton.edges
+    mixed = dendrite[e[:, 0]] != dendrite[e[:, 1]]
+    return float(skeleton.edge_lengths_um[mixed].sum())

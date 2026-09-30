@@ -19,6 +19,7 @@ dependencies = [
     "s3fs>=2025.3",
     "safetensors>=0.5",
     "scikit-image>=0.24",
+    "scikit-learn>=1.9.1",
     "skan>=0.12",
     "torch>=2.6",
     "typer>=0.12",
@@ -54,5 +55,10 @@ pydocstyle.convention = "numpy"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
-markers = ["network: requires network access to public S3 / Allen API"]
+# Full U-Net forward/backward passes on CPU peak at 3-4 GB each (and more together); run them
+# explicitly with `pytest -m heavy` on a machine with memory to spare.
+addopts = "-ra -m 'not heavy'"
+markers = [
+    "network: requires network access to public S3 / Allen API",
+    "heavy: runs the full network on CPU (several GB of memory)",
+]

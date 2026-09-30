@@ -19,6 +19,7 @@ from exaspim_axon_segmentation.postprocess.skeleton import PIECE_COLORS
 from exaspim_axon_segmentation.train.swc import read_swc
 
 ATLAS, GROWN = "#FFFFFF", "#FFC400"
+DENDRITE, AXON = (0.12, 0.47, 0.71), (1.0, 0.43, 0.0)
 
 
 def render_skeleton_overview(
@@ -50,9 +51,12 @@ def render_skeleton_overview(
     zyx, edges = swc.zyx_um, swc.edges()
     piece_colour = _piece_colours(zyx, edges)
 
-    fig = plt.figure(figsize=(18, 8.5 + 6.2 * n_windows), layout="constrained")
+    axon_path = skeleton_dir / "axon_candidates.swc"
+    typed = axon_path.exists() and "dendrites" in summary
+    fig = plt.figure(figsize=(27 if typed else 18, 8.5 + 6.2 * n_windows), layout="constrained")
     top, *rows = fig.subfigures(1 + n_windows, 1, height_ratios=[1.4] + [1.0] * n_windows)
-    ax_raw, ax_sk = top.subplots(1, 2)
+    top_axes = top.subplots(1, 3 if typed else 2)
+    ax_raw, ax_sk = top_axes[0], top_axes[1]
 
     level = min(overview_level, asset.fused.n_levels - 1)
     tf = asset.fused.transforms[level]
@@ -63,7 +67,23 @@ def render_skeleton_overview(
     ax_raw.imshow(image, cmap="gray", extent=extent)
     ax_sk.imshow(image * 0.35, cmap="gray", vmin=0, vmax=1, extent=extent)
     _draw_skeleton(ax_sk, zyx, edges, piece_colour, width=0.5)
-    for ax in (ax_raw, ax_sk):
+    if typed:
+        ax_axon = top_axes[2]
+        ax_axon.imshow(image * 0.35, cmap="gray", vmin=0, vmax=1, extent=extent)
+        dendrite = swc.types == 3
+        both = dendrite[edges[:, 0]] & dendrite[edges[:, 1]]
+        _draw_skeleton(ax_axon, zyx, edges[both], np.tile(DENDRITE, (len(zyx), 1)), width=0.3)
+        axon = read_swc(axon_path)
+        _draw_skeleton(ax_axon, axon.zyx_um, axon.edges(), np.tile(AXON, (len(axon.ids), 1)),
+                       width=0.9)  # fmt: skip
+        d = summary["dendrites"]
+        ax_axon.set_title(
+            f"axon candidates (orange) · {d['axon_candidate_um'] / 1e3:.0f} mm in "
+            f"{len(summary['axon_candidate_pieces'])} SWCs · faint blue = dendrites of "
+            f"{d['somata']} detected somata ({d['dendrite_um'] / 1e3:.0f} mm)/",
+            loc="left", fontsize=10,
+        )  # fmt: skip
+    for ax in top_axes:
         _outline(ax, atlas, ATLAS, "-")
         _outline(ax, grown, GROWN, "--")
         ax.set_xlim(extent[0], extent[1])
