@@ -11,14 +11,21 @@ ontology are baked into the image at build time.
 
 ## Parameters
 
-`code/run [ASSET] [REGIONS] [LEVEL] [CROP_UM] [TILE_SIZE] [BATCH_SIZE]` — see the header of
-`code/run` for defaults. Example quick diagnostic: `… MD 2 600`.
+`code/run [ASSET] [REGIONS] [LEVEL] [CROP_UM] [TILE_SIZE] [BATCH_SIZE] [WEIGHTS] [REGION_GROWTH]`
+— see the header of `code/run` for defaults. The default weights are the fine-tuned model asset
+`52a5d51b-5ba7-4e5a-a923-65e4dd04c359`, which must be attached at mount `trailmap_finetune_v2`.
+Example quick diagnostic: `… MD 2 600`.
+
+The run segments the region grown by 15% of its volume, skeletonizes, removes debris, connects the
+pieces, and writes one Horta-importable SWC per piece (see the package README).
 
 ## Outputs
 
 | file | content |
 |---|---|
-| `<subject>_<regions>_L<level>_axon_probability.zarr` | uint8 axon probability (p × 255), OME-NGFF, on the fused level grid |
-| `qc/*_region_overlay.png` | region outline on the fused image |
-| `qc/*_prediction.png` | raw vs probability MIPs |
-| `predict.log`, `pip_list.txt`, `nvidia_smi.txt`, `SOURCE_COMMIT` | provenance |
+| `<tag>_axon_probability.zarr` | uint8 axon probability (p × 255), OME-NGFF, on the fused level grid |
+| `<tag>_skeleton/swc/<tag>_NNNN.swc` | one SWC per connected piece (µm, `# OFFSET` / `# COLOR` headers) |
+| `<tag>_skeleton/skeleton.swc`, `skeleton.zarr`, `summary.json` | whole skeleton, voxels, lengths |
+| `qc/<tag>_skeleton.png` | region (atlas + grown outline) with every piece |
+| `qc/<tag>_region_overlay.png` | atlas region outline on the fused image |
+| `run.log`, `pip_list.txt`, `nvidia_smi.txt`, `SOURCE_COMMIT` | provenance |

@@ -26,12 +26,15 @@ class RegionRoi:
         Location of ``mask`` in annotation level-0 indices (the region's tight bounding box).
     mask_transform : LevelTransform
         Annotation level-0 voxel-center transform.
+    growth : float
+        Fraction of its volume the region was grown by (see :meth:`grown`); 0 for the atlas region.
     """
 
     label_ids: frozenset[int]
     mask: NDArray[np.bool_]
     mask_box: Box
     mask_transform: LevelTransform
+    growth: float = 0.0
 
     @classmethod
     def from_annotation(
@@ -70,6 +73,44 @@ class RegionRoi:
             np.add(tight.start, search_box.start), np.add(tight.stop, search_box.start)
         )
         return cls(ids, fine[tight.slices], mask_box, fine_tf)
+
+    def grown(self, fraction: float) -> RegionRoi:
+        """Return the region dilated uniformly (µm) until its volume is ``1 + fraction`` times.
+
+        Registration of the atlas to the sample is not voxel-exact, so a margin keeps neurites at
+        the region's edge. The shell is the set of outside voxels closest (Euclidean, physical
+        units on the anisotropic annotation grid) to the region, cut at the distance that adds
+        ``fraction`` of the original voxel count. On 851474, MD grown by 15% gains a ~40 µm shell.
+        """
+        if fraction <= 0:
+            return self
+        scale = np.asarray(self.mask_transform.scale)
+        target = round(self.n_voxels * fraction)
+        faces = sum(
+            np.count_nonzero(np.diff(self.mask, axis=a)) * np.prod(np.delete(scale, a))
+            for a in range(3)
+        )
+        # shell thickness if the surface were flat; the search radius doubles until it suffices
+        reach_um = 2 * target * np.prod(scale) / max(faces, 1.0) + 2 * scale.max()
+        while True:
+            pad = np.ceil(reach_um / scale).astype(int) + 1
+            padded = np.pad(self.mask, [(q, q) for q in pad])
+            distance = _outside_distance(padded, scale, reach_um)
+            shell = distance[np.isfinite(distance) & ~padded]
+            if len(shell) >= target:
+                break
+            reach_um *= 2
+        cutoff = np.partition(shell, target - 1)[target - 1]
+        grown = padded | (distance <= cutoff)
+        tight = _mask_box(grown)
+        start = np.asarray(self.mask_box.start) - pad + np.asarray(tight.start)
+        return RegionRoi(
+            self.label_ids,
+            grown[tight.slices],
+            Box.from_arrays(start, start + np.asarray(tight.shape)),
+            self.mask_transform,
+            growth=self.growth + fraction * (1 + self.growth),
+        )
 
     @property
     def lo_um(self) -> NDArray[np.float64]:
@@ -153,6 +194,31 @@ class RegionRoi:
             local = [i[v] for i, v in zip(per_axis, valid, strict=True)]
             out[np.ix_(*valid)] = self.mask[np.ix_(*local)]
         return out
+
+
+def _outside_distance(
+    mask: NDArray[np.bool_], scale: NDArray[np.float64], reach_um: float, block: int = 128
+) -> NDArray[np.float32]:
+    """Physical distance to the nearest mask voxel, exact up to ``reach_um`` (inf beyond).
+
+    Computed block by block with a ``reach_um`` halo, so memory stays small for large masks.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    halo = np.ceil(reach_um / scale).astype(int)
+    out = np.full(mask.shape, np.inf, dtype=np.float32)
+    for corner in np.ndindex(*(-(-np.asarray(mask.shape) // block))):
+        lo = np.asarray(corner) * block
+        hi = np.minimum(lo + block, mask.shape)
+        a, b = np.maximum(lo - halo, 0), np.minimum(hi + halo, mask.shape)
+        window = mask[tuple(slice(i, j) for i, j in zip(a, b, strict=True))]
+        if not window.any():
+            continue
+        d = distance_transform_edt(~window, sampling=scale)
+        core = tuple(slice(i - k, j - k) for i, j, k in zip(lo, hi, a, strict=True))
+        out[tuple(slice(i, j) for i, j in zip(lo, hi, strict=True))] = d[core]
+    out[out > reach_um] = np.inf
+    return out
 
 
 def _mask_box(mask: NDArray[np.bool_]) -> Box:

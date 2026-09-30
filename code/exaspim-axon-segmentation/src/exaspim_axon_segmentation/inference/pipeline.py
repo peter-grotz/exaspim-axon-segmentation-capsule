@@ -92,12 +92,13 @@ def predict_region(
     """
     asset = ExaspimAsset(asset_uri)
     ontology = CcfOntology.load()
-    roi = RegionRoi.from_annotation(asset.annotation, ontology.resolve(regions))
+    atlas_roi = RegionRoi.from_annotation(asset.annotation, ontology.resolve(regions))
+    roi = atlas_roi.grown(config.region_growth)
     plan = plan_region(asset, roi, config, crop_um=crop_um)
     log.info(
-        "Region %s: %.2f mm³; level %d box %s; %d/%d tiles touch the region",
-        list(regions), roi.volume_mm3, config.level, plan.region.shape,
-        len(plan.tiles), plan.n_tiles_in_box,
+        "Region %s: %.2f mm³ (%.2f mm³ grown by %.0f%%); level %d box %s; %d/%d tiles touch it",
+        list(regions), atlas_roi.volume_mm3, roi.volume_mm3, 100 * config.region_growth,
+        config.level, plan.region.shape, len(plan.tiles), plan.n_tiles_in_box,
     )  # fmt: skip
 
     scaling = estimate_scaling(config.normalization, asset.fused, config.level, roi)
@@ -130,6 +131,19 @@ def predict_region(
     return stats
 
 
+def prediction_roi(
+    asset: ExaspimAsset, provenance: dict, *, growth: float | None = None
+) -> RegionRoi:
+    """Rebuild the (grown) region a prediction was made for from its provenance.
+
+    ``growth`` overrides the recorded growth, e.g. to apply a margin to an older prediction. Its
+    tiles cover ``mask_dilation_um`` (50 µm) around the atlas region, which holds the ~40 µm
+    shell of a 15% growth of MD.
+    """
+    roi = RegionRoi.from_annotation(asset.annotation, provenance["label_ids"])
+    return roi.grown(provenance.get("region_growth", 0.0) if growth is None else growth)
+
+
 def _provenance(
     asset: ExaspimAsset,
     regions: Sequence[str | int],
@@ -149,6 +163,8 @@ def _provenance(
         "asset": asset.root,
         "regions": [str(r) for r in regions],
         "label_ids": sorted(roi.label_ids),
+        "region_growth": roi.growth,
+        "region_volume_mm3": roi.volume_mm3,
         "level": config.level,
         "region_box": {"start": list(plan.region.start), "stop": list(plan.region.stop)},
         "config": config.model_dump(mode="json"),

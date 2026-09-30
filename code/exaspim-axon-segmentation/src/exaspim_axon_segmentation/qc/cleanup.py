@@ -10,8 +10,8 @@ import zarr
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 
-from exaspim_axon_segmentation.inference.pipeline import PROVENANCE_ATTR
-from exaspim_axon_segmentation.io import Box, ExaspimAsset, RegionRoi
+from exaspim_axon_segmentation.inference.pipeline import PROVENANCE_ATTR, prediction_roi
+from exaspim_axon_segmentation.io import Box, ExaspimAsset
 from exaspim_axon_segmentation.postprocess.cleanup import Category
 from exaspim_axon_segmentation.postprocess.pipeline import CLEANUP_ATTR
 
@@ -56,7 +56,7 @@ def render_cleanup(
     tf = asset.fused.transforms[level]
     box = provenance["region_box"]
     region = Box.from_arrays(box["start"], box["stop"])
-    roi = RegionRoi.from_annotation(asset.annotation, provenance["label_ids"])
+    roi = prediction_roi(asset, provenance)
 
     depth = max(1, round(slab_um / tf.scale[0]))
     centers = np.linspace(0, region.shape[0], 4)[1:-1].astype(int)

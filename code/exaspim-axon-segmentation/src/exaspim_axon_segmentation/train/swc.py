@@ -72,7 +72,7 @@ def parse_swc(text: str) -> Swc:
                 offset = np.array([float(v) for v in line.split()[2:5]])
         elif line.strip():
             rows.append(line.split()[:7])
-    a = np.array(rows, dtype=np.float64)
+    a = np.array(rows, dtype=np.float64).reshape(-1, 7)
     return Swc(
         ids=a[:, 0].astype(np.int64),
         types=a[:, 1].astype(np.int64),
@@ -125,10 +125,23 @@ def resample(swc: Swc, step_um: float) -> Swc:
     )
 
 
-def write_swc(swc: Swc, path: Path | str, *, offset_um: NDArray | None = None) -> None:
-    """Write an SWC file; positions are stored relative to ``offset_um`` (default: first node)."""
+def write_swc(
+    swc: Swc,
+    path: Path | str,
+    *,
+    offset_um: NDArray | None = None,
+    color: tuple[float, float, float] | None = None,
+) -> None:
+    """Write an SWC file in Horta's layout; positions are relative to ``offset_um``.
+
+    ``offset_um`` defaults to the first node. Header order follows the Janelia Workstation export:
+    the original comment lines (e.g. ``# ORIGINAL_SOURCE``), ``# OFFSET``, then ``# COLOR``.
+    """
     offset = np.asarray(offset_um if offset_um is not None else swc.xyz_um[0], dtype=np.float64)
-    lines = [*swc.header, f"# OFFSET {offset[0]:.6f} {offset[1]:.6f} {offset[2]:.6f}"]
+    header = [h for h in swc.header if not h.upper().startswith("# COLOR")]
+    lines = [*header, f"# OFFSET {offset[0]:.6f} {offset[1]:.6f} {offset[2]:.6f}"]
+    if color is not None:
+        lines.append("# COLOR " + ",".join(f"{c:.6f}" for c in color))
     rel = swc.xyz_um - offset
     for i, t, (x, y, z), r, p in zip(swc.ids, swc.types, rel, swc.radius, swc.parents, strict=True):
         lines.append(f"{i} {t} {x:.6f} {y:.6f} {z:.6f} {r:.6f} {p}")

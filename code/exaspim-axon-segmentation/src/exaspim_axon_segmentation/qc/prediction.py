@@ -12,9 +12,9 @@ import zarr
 from matplotlib.figure import Figure
 from numpy.typing import NDArray
 
-from exaspim_axon_segmentation.inference.pipeline import PROVENANCE_ATTR
+from exaspim_axon_segmentation.inference.pipeline import PROVENANCE_ATTR, prediction_roi
 from exaspim_axon_segmentation.inference.predict import COMPLETED_ATTR
-from exaspim_axon_segmentation.io import Box, ExaspimAsset, RegionRoi
+from exaspim_axon_segmentation.io import Box, ExaspimAsset
 from exaspim_axon_segmentation.model.unet import CONTEXT
 
 REGION_COLOR = "#CDEB05"
@@ -98,7 +98,7 @@ def render_prediction_comparison(
     level = ref.provenance["level"]
     tf = asset.fused.transforms[level]
     raw = asset.fused.read(level, ref.region)
-    roi = RegionRoi.from_annotation(asset.annotation, ref.provenance["label_ids"])
+    roi = prediction_roi(asset, ref.provenance)
     mask = roi.sample_on(tf, ref.region)
 
     depth = max(1, round(slab_um / tf.scale[0]))

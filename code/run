@@ -2,29 +2,36 @@
 # exaSPIM TRAILMAP axon segmentation — Code Ocean entry point.
 #
 # Ordered parameters (all optional):
-#   1 ASSET       processed exaSPIM asset root
-#                 (default: s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_...)
-#   2 REGIONS     comma-separated CCF acronyms or IDs            (default: MD)
-#   3 LEVEL       fused.zarr pyramid level                        (default: 2)
-#   4 CROP_UM     cube side for a quick diagnostic; 0 = whole region (default: 0)
-#   5 TILE_SIZE   network input side, multiple of 8              (default: 160)
-#   6 BATCH_SIZE  tiles per GPU batch                            (default: 1)
-#   7 WEIGHTS     registered weights name or a .safetensors path, e.g. from an attached
-#                 model asset: /data/trailmap_finetune_v1/best.safetensors
-#                                                               (default: trailmap-axon-210409)
+#   1 ASSET          processed exaSPIM asset root
+#                    (default: s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_...)
+#   2 REGIONS        comma-separated CCF acronyms or IDs                    (default: MD)
+#   3 LEVEL          fused.zarr pyramid level                                (default: 2)
+#   4 CROP_UM        cube side for a quick diagnostic; 0 = whole region     (default: 0)
+#   5 TILE_SIZE      network input side, multiple of 8                      (default: 160)
+#   6 BATCH_SIZE     tiles per GPU batch                                    (default: 1)
+#   7 WEIGHTS        fine-tuned .safetensors, or a registered name
+#                    (default: /data/trailmap_finetune_v2/best.safetensors — attach model asset
+#                     52a5d51b-5ba7-4e5a-a923-65e4dd04c359 at mount trailmap_finetune_v2)
+#   8 REGION_GROWTH  grow the region by this fraction of its volume         (default: 0.15)
 #
-# Outputs in /results:
-#   <subject>_<regions>_L<level>[_crop<um>]_axon_probability.zarr   uint8 p × 255, OME-NGFF
-#   <subject>_<regions>_L<level>[_crop<um>]_axon_categories.zarr    uint8 cleanup category per voxel
-#                                                                    (1 kept, 2 no core, 3 too small,
-#                                                                     4 soma-connected)
-#   qc/*_region_overlay.png, qc/*_prediction.png, qc/*_cleanup.png   visual checks
-#   predict.log, pip_list.txt, nvidia_smi.txt, SOURCE_COMMIT          provenance
+# Pipeline (exaspim-axon run): segment the grown region → skeletonize, remove debris, connect
+# pieces → one SWC per piece → QC figure.
+#
+# Outputs in /results, with <tag> = <subject>_<regions>_L<level>[_crop<um>]:
+#   <tag>_axon_probability.zarr        uint8 axon probability (p × 255), OME-NGFF
+#   <tag>_skeleton/swc/<tag>_NNNN.swc  one Horta/Janelia-Workstation SWC per connected piece,
+#                                      longest first (µm, # OFFSET/# COLOR headers)
+#   <tag>_skeleton/skeleton.swc        all pieces as one SWC forest
+#   <tag>_skeleton/skeleton.zarr       skeleton voxels, OME-NGFF
+#   <tag>_skeleton/summary.json        settings, lengths, per-piece file list
+#   qc/<tag>_skeleton.png              region (atlas + grown outline) with every piece
+#   qc/<tag>_region_overlay.png        atlas region on the fused image
+#   run.log, pip_list.txt, nvidia_smi.txt, SOURCE_COMMIT   provenance
 set -euo pipefail
 
 # First parameter selects the mode; "predict" (default) keeps the ordered parameters below.
 #   finetune [STEPS] [MAX_MINUTES] [HOLDOUT_BRAIN] [ENVELOPE_UM]
-#            train, then predict 851474 MD with the best weights; 822178 MD is labelled only within
+#            train, then run the pipeline on 851474 MD with the best weights; 822178 MD is labelled only within
 #            ENVELOPE_UM (default 50) of its traces, blocks are labelled whole
 MODE="predict"
 if [[ "${1:-}" == "predict" || "${1:-}" == "finetune" ]]; then MODE="$1"; shift; fi
@@ -73,9 +80,14 @@ if [[ "${MODE}" == "finetune" ]]; then
     WEIGHTS="${RESULTS}/finetune/best.safetensors"
     # Evaluate on the unseen brain used before: full MD of 851474 with the fine-tuned weights.
     ASSET="s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36"
-    REGIONS="MD"; LEVEL="2"; CROP_UM="0"; TILE_SIZE="160"; BATCH_SIZE="1"
+    REGIONS="MD"; LEVEL="2"; CROP_UM="0"; TILE_SIZE="160"; BATCH_SIZE="1"; REGION_GROWTH="0.15"
 else
-    WEIGHTS="${7:-trailmap-axon-210409}"
+    WEIGHTS="${7:-/data/trailmap_finetune_v2/best.safetensors}"
+    REGION_GROWTH="${8:-0.15}"
+    if [[ "${WEIGHTS}" == /* && ! -f "${WEIGHTS}" ]]; then
+        echo "Weights ${WEIGHTS} not found: attach the fine-tuned model data asset" >&2
+        exit 1
+    fi
 fi
 
 subject="$(basename "${ASSET%/}" | cut -d_ -f2)"
@@ -88,18 +100,12 @@ if [[ "${CROP_UM}" != "0" ]]; then
     crop_args=(--crop-um "${CROP_UM}")
     tag="${tag}_crop${CROP_UM}"
 fi
-output="${RESULTS}/${tag}_axon_probability.zarr"
-categories="${RESULTS}/${tag}_axon_categories.zarr"
 
-echo "=== ${ASSET} · regions ${REGIONS} · level ${LEVEL} · tile ${TILE_SIZE} × batch ${BATCH_SIZE}"
+echo "=== ${ASSET} · regions ${REGIONS} (+${REGION_GROWTH} volume) · level ${LEVEL} · weights ${WEIGHTS}"
 exaspim-axon -v qc-region "${ASSET}" "${region_args[@]}" \
     --out "${RESULTS}/qc/${tag}_region_overlay.png"
-exaspim-axon -v predict "${ASSET}" "${region_args[@]}" --out "${output}" --level "${LEVEL}" \
-    --tile-size "${TILE_SIZE}" --batch-size "${BATCH_SIZE}" --device cuda --weights "${WEIGHTS}" \
-    "${crop_args[@]}" \
-    2>&1 | tee "${RESULTS}/predict.log"
-exaspim-axon -v qc-predictions "${output}" -l "${MODE} weights" \
-    --out "${RESULTS}/qc/${tag}_prediction.png"
-exaspim-axon -v cleanup "${output}" --out "${categories}" 2>&1 | tee "${RESULTS}/cleanup.log"
-exaspim-axon -v qc-cleanup "${output}" "${categories}" --out "${RESULTS}/qc/${tag}_cleanup.png"
-echo "=== done: ${output}"
+exaspim-axon -v run "${ASSET}" "${region_args[@]}" --out "${RESULTS}" --weights "${WEIGHTS}" \
+    --level "${LEVEL}" --tile-size "${TILE_SIZE}" --batch-size "${BATCH_SIZE}" --device cuda \
+    --region-growth "${REGION_GROWTH}" "${crop_args[@]}" \
+    2>&1 | tee "${RESULTS}/run.log"
+echo "=== done: ${RESULTS}/${tag}_skeleton/swc"

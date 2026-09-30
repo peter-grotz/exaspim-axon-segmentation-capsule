@@ -216,3 +216,32 @@ def _densest(points_um: NDArray, window_um: float) -> NDArray[np.float64]:
     members = np.all(cells == cell, axis=1)
     sub = points_um[members]
     return np.array([np.median(sub[:, 0]), *((cell + 0.5) * window_um)])
+
+
+def score_skeleton(
+    coordinates_um: NDArray,
+    edges: NDArray,
+    traces_um: NDArray,
+    *,
+    near_um: float = 5.0,
+    envelope_um: float | None = 50.0,
+) -> dict[str, float]:
+    """Length-based agreement between a skeleton and complete traces.
+
+    Recall: share of trace points within ``near_um`` of a skeleton node (≈ share of traced
+    length). Precision: share of skeleton length within ``near_um`` of a trace, counting only
+    skeleton edges within ``envelope_um`` of the traces (tracing may be complete only there).
+    """
+    skeleton_tree = cKDTree(coordinates_um)
+    d_trace, _ = skeleton_tree.query(traces_um, distance_upper_bound=near_um)
+    midpoints = (coordinates_um[edges[:, 0]] + coordinates_um[edges[:, 1]]) / 2
+    lengths = np.linalg.norm(coordinates_um[edges[:, 0]] - coordinates_um[edges[:, 1]], axis=1)
+    d_skel, _ = cKDTree(traces_um).query(midpoints, distance_upper_bound=envelope_um or np.inf)
+    counted = np.isfinite(d_skel)
+    near = counted & (d_skel <= near_um)
+    return {
+        "recall": float(np.isfinite(d_trace).mean()),
+        "precision": float(lengths[near].sum() / max(lengths[counted].sum(), 1e-9)),
+        "skeleton_length_counted_um": float(lengths[counted].sum()),
+        "trace_points": len(traces_um),
+    }

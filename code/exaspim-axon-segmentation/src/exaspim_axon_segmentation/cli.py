@@ -75,6 +75,9 @@ def predict(
     weights: Annotated[
         str, typer.Option(help="Registered weights name or fine-tuned .safetensors path")
     ] = "trailmap-axon-210409",
+    region_growth: Annotated[
+        float, typer.Option(help="Grow the region by this fraction of its volume")
+    ] = 0.15,
     overwrite: Annotated[bool, typer.Option(help="Discard an existing output")] = False,
 ) -> None:
     """Segment axons within CCF regions and write a probability OME-Zarr."""
@@ -82,6 +85,7 @@ def predict(
 
     config = InferenceConfig(
         weights=weights,
+        region_growth=region_growth,
         level=level,
         tile_size=tile_size,
         batch_size=batch_size,
@@ -250,3 +254,151 @@ def qc_traces(
         for s in sc:
             log.info("%s · %s", name, s.text())
     log.info("Wrote %s", out)
+
+
+@app.command()
+def skeletonize(
+    prediction: Annotated[str, typer.Argument(help="Probability OME-Zarr from `predict`")],
+    out: Annotated[Path, typer.Option(help="Output directory")],
+    threshold: Annotated[float, typer.Option(help="Neurite mask threshold")] = 0.2,
+    core: Annotated[float, typer.Option(help="Keep components with a voxel above this")] = 0.5,
+    min_volume_um3: Annotated[float, typer.Option(help="Drop smaller components")] = 100.0,
+    spur_um: Annotated[
+        float, typer.Option(help="Prune terminal branches shorter than this")
+    ] = 10.0,
+    bridge_um: Annotated[
+        float, typer.Option(help="Reconnect aligned piece tips across gaps up to this; 0 = off")
+    ] = 30.0,
+    min_piece_um: Annotated[
+        float, typer.Option(help="Minimum cable length (after bridging)")
+    ] = 100.0,
+    anchor_um: Annotated[
+        float, typer.Option(help="Pieces this long are anchor cable; 0 = no isolation filter")
+    ] = 500.0,
+    attach_um: Annotated[
+        float, typer.Option(help="Keep shorter pieces only within this of anchor cable")
+    ] = 50.0,
+    connect_um: Annotated[
+        float, typer.Option(help="Connect kept cable across gaps up to this; 0 = off")
+    ] = 50.0,
+    connect_min_p: Annotated[
+        float, typer.Option(help="Reject connections passing a voxel below this probability")
+    ] = 0.05,
+    speckle_max_um: Annotated[
+        float, typer.Option(help="Speckle removal: drop single-plane pieces shorter than this")
+    ] = 60.0,
+    swc: Annotated[
+        list[Path] | None, typer.Option("--swc", help="Complete traces to score against; repeat")
+    ] = None,
+    envelope_um: Annotated[
+        float, typer.Option(help="Score precision within this of traces")
+    ] = 50.0,
+    region_growth: Annotated[
+        float | None,
+        typer.Option(help="Region growth (fraction of volume); default: the prediction's"),
+    ] = None,
+) -> None:
+    """Skeletonize a probability map within its region: debris removal, connection, SWCs."""
+    import json
+
+    from exaspim_axon_segmentation.postprocess.pipeline import skeletonize_prediction
+    from exaspim_axon_segmentation.postprocess.skeleton import SkeletonConfig
+
+    config = SkeletonConfig(
+        threshold=threshold,
+        core=core,
+        min_volume_um3=min_volume_um3,
+        spur_um=spur_um,
+        bridge_um=bridge_um,
+        min_piece_um=min_piece_um,
+        anchor_um=anchor_um,
+        attach_um=attach_um,
+        connect_um=connect_um,
+        connect_min_p=connect_min_p,
+        speckle_max_um=speckle_max_um,
+    )
+    summary = skeletonize_prediction(prediction, out, config, region_growth=region_growth)
+    if swc:
+        import numpy as np
+
+        from exaspim_axon_segmentation.qc.traces import score_skeleton
+        from exaspim_axon_segmentation.train import read_swc
+
+        skel = read_swc(out / "skeleton.swc")
+        index = {int(i): k for k, i in enumerate(skel.ids)}
+        edges = np.array(
+            [(k, index[int(p)]) for k, p in enumerate(skel.parents) if int(p) in index]
+        )
+        traces = np.concatenate([read_swc(p).zyx_um for p in swc])
+        roi_box = summary["box"]
+        # only trace points inside the processed box can be found
+        lo = np.min(skel.zyx_um, axis=0) - envelope_um
+        hi = np.max(skel.zyx_um, axis=0) + envelope_um
+        traces = traces[np.all((traces >= lo) & (traces <= hi), axis=1)]
+        scores = score_skeleton(skel.zyx_um, edges, traces, envelope_um=envelope_um)
+        summary["trace_scores"] = scores
+        (out / "summary.json").write_text(json.dumps(summary, indent=2))
+        log.info("Skeleton vs traces (box %s): %s", roi_box, scores)
+
+
+@app.command("qc-skeleton")
+def qc_skeleton(
+    prediction: Annotated[str, typer.Argument(help="Probability OME-Zarr from predict")],
+    skeleton_dir: Annotated[Path, typer.Argument(help="Output directory of skeletonize")],
+    out: Annotated[Path, typer.Option(help="Output PNG")] = Path("qc/skeleton.png"),
+) -> None:
+    """Draw the (grown) region with every skeleton piece, plus close-ups of the densest cable."""
+    from exaspim_axon_segmentation.qc.skeleton import render_skeleton_overview
+
+    render_skeleton_overview(prediction, skeleton_dir, out)
+    log.info("Wrote %s", out)
+
+
+@app.command()
+def run(
+    asset: AssetArg,
+    region: RegionOpt,
+    out: Annotated[Path, typer.Option(help="Output directory")],
+    weights: Annotated[
+        str,
+        typer.Option(help="Fine-tuned .safetensors (e.g. trailmap_finetune_v2/best.safetensors)"),
+    ],
+    level: Annotated[int, typer.Option(help="fused.zarr pyramid level")] = 2,
+    tile_size: Annotated[int, typer.Option(help="Network input side (multiple of 8)")] = 160,
+    batch_size: Annotated[int, typer.Option()] = 2,
+    device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
+    region_growth: Annotated[
+        float, typer.Option(help="Grow the region by this fraction of its volume")
+    ] = 0.15,
+    crop_um: Annotated[
+        float | None, typer.Option(help="Only a cube of this side at the region's core")
+    ] = None,
+) -> None:
+    """Full pipeline: segment → skeletonize, remove debris, connect → per-piece SWCs → QC figure.
+
+    Writes into OUT: ``<tag>_axon_probability.zarr``, ``<tag>_skeleton/`` (``skeleton.swc``,
+    ``swc/<tag>_NNNN.swc`` one Horta-importable file per piece, ``skeleton.zarr``,
+    ``summary.json``) and ``qc/<tag>_skeleton.png``, with ``<tag> = <subject>_<regions>_L<level>``.
+    An interrupted run resumes the prediction where it stopped.
+    """
+    from exaspim_axon_segmentation.inference import predict_region
+    from exaspim_axon_segmentation.postprocess.pipeline import skeletonize_prediction
+    from exaspim_axon_segmentation.postprocess.skeleton import SkeletonConfig
+    from exaspim_axon_segmentation.qc.skeleton import render_skeleton_overview
+
+    tag = f"{ExaspimAsset(asset).subject_id}_{'+'.join(region)}_L{level}"
+    if crop_um is not None:
+        tag += f"_crop{crop_um:.0f}"
+    probability = str(out / f"{tag}_axon_probability.zarr")
+    skeleton_dir = out / f"{tag}_skeleton"
+    config = InferenceConfig(
+        weights=weights, level=level, tile_size=tile_size, batch_size=batch_size, device=device,
+        region_growth=region_growth,
+    )  # fmt: skip
+    predict_region(asset, region, probability, config, crop_um=crop_um)
+    summary = skeletonize_prediction(probability, skeleton_dir, SkeletonConfig(), swc_prefix=tag)
+    render_skeleton_overview(probability, skeleton_dir, out / "qc" / f"{tag}_skeleton.png")
+    log.info(
+        "Done: %.0f mm of skeleton in %d pieces → %s",
+        summary["length_in_region_um"] / 1e3, len(summary["pieces"]), skeleton_dir / "swc",
+    )  # fmt: skip
