@@ -16,7 +16,7 @@ ontology are baked into the image at build time.
 `52a5d51b-5ba7-4e5a-a923-65e4dd04c359`, which must be attached at mount `trailmap_finetune_v2`.
 Example quick diagnostic: `… MD 2 600`.
 
-The run segments the region grown by 15% of its volume, skeletonizes, removes debris, connects the
+The run segments the region grown by 20% of its volume, skeletonizes, removes debris, connects the
 pieces, and writes one Horta-importable SWC per piece (see the package README).
 
 ## Outputs

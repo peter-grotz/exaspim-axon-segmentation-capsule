@@ -66,10 +66,10 @@ class InferenceConfig(_Frozen):
     compile: bool = False
     allow_tf32: bool = False
     region_growth: float = Field(
-        0.15,
+        0.2,
         ge=0,
         description="Grow the CCF region by this fraction of its volume before segmenting "
-        "(uniform shell, ~40 µm for MD at 15%), for atlas-registration slack",
+        "(uniform shell, ~58 µm for MD at 20%), for atlas-registration slack",
     )
     mask_dilation_um: float = Field(50.0, ge=0, description="Keep tiles this close to the region")
     io_threads: int = Field(8, ge=1)

@@ -77,7 +77,7 @@ def predict(
     ] = "trailmap-axon-210409",
     region_growth: Annotated[
         float, typer.Option(help="Grow the region by this fraction of its volume")
-    ] = 0.15,
+    ] = 0.2,
     overwrite: Annotated[bool, typer.Option(help="Discard an existing output")] = False,
 ) -> None:
     """Segment axons within CCF regions and write a probability OME-Zarr."""
@@ -369,7 +369,7 @@ def run(
     device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
     region_growth: Annotated[
         float, typer.Option(help="Grow the region by this fraction of its volume")
-    ] = 0.15,
+    ] = 0.2,
     crop_um: Annotated[
         float | None, typer.Option(help="Only a cube of this side at the region's core")
     ] = None,
@@ -402,3 +402,57 @@ def run(
         "Done: %.0f mm of skeleton in %d pieces → %s",
         summary["length_in_region_um"] / 1e3, len(summary["pieces"]), skeleton_dir / "swc",
     )  # fmt: skip
+
+
+@app.command("predict-somata")
+def predict_somata(
+    asset: AssetArg,
+    somata: Annotated[
+        Path, typer.Option(help="CSV with columns name, x_um, y_um, z_um (physical, as in SWCs)")
+    ],
+    out: Annotated[Path, typer.Option(help="Output directory")],
+    weights: Annotated[str, typer.Option(help="Fine-tuned .safetensors or registered name")],
+    side_um: Annotated[float, typer.Option(help="Cube side around each soma")] = 1200.0,
+    level: Annotated[int, typer.Option(help="fused.zarr pyramid level")] = 2,
+    tile_size: Annotated[int, typer.Option(help="Network input side (multiple of 8)")] = 160,
+    batch_size: Annotated[int, typer.Option()] = 2,
+    device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
+) -> None:
+    """Segment and skeletonize a cube around each listed soma.
+
+    Skeletons (debris removed, pieces connected, per-piece SWCs) go to
+    ``<subject>_somata_skeletons/<name>/``. For building skeleton-level training data from traced
+    neurons: one prediction covers all cubes of the asset; an interrupted run resumes.
+    """
+    import csv
+
+    import numpy as np
+
+    from exaspim_axon_segmentation.inference import predict_points
+    from exaspim_axon_segmentation.postprocess.pipeline import skeletonize_around
+    from exaspim_axon_segmentation.postprocess.skeleton import SkeletonConfig
+
+    with somata.open() as f:
+        rows = list(csv.DictReader(f))
+    names = [r["name"] for r in rows]
+    centers = np.array([[float(r["z_um"]), float(r["y_um"]), float(r["x_um"])] for r in rows])
+    subject = ExaspimAsset(asset).subject_id
+    probability = str(out / f"{subject}_somata_L{level}_axon_probability.zarr")
+    config = InferenceConfig(
+        weights=weights, level=level, tile_size=tile_size, batch_size=batch_size, device=device,
+        region_growth=0.0,
+    )  # fmt: skip
+    predict_points(asset, centers, side_um, probability, config)
+    index = []
+    for name, center in zip(names, centers, strict=True):
+        summary = skeletonize_around(
+            probability, center, side_um, out / f"{subject}_somata_skeletons" / name,
+            SkeletonConfig(), swc_prefix=name,
+        )  # fmt: skip
+        index.append({"name": name, "length_mm": round(summary["length_um"] / 1e3, 3),
+                      "pieces": len(summary["pieces"])})  # fmt: skip
+        log.info("%s: %.1f mm in %d pieces", name, index[-1]["length_mm"], index[-1]["pieces"])
+    with (out / f"{subject}_somata_skeletons" / "index.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["name", "length_mm", "pieces"])
+        writer.writeheader()
+        writer.writerows(index)

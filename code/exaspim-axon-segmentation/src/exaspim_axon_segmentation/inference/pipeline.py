@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 import zarr
+from numpy.typing import NDArray
 
 from exaspim_axon_segmentation import __version__
 from exaspim_axon_segmentation.config import InferenceConfig
@@ -94,10 +95,51 @@ def predict_region(
     ontology = CcfOntology.load()
     atlas_roi = RegionRoi.from_annotation(asset.annotation, ontology.resolve(regions))
     roi = atlas_roi.grown(config.region_growth)
+    log.info(
+        "Region %s: %.2f mm³ (%.2f mm³ grown by %.0f%%)",
+        list(regions), atlas_roi.volume_mm3, roi.volume_mm3, 100 * config.region_growth,
+    )  # fmt: skip
+    return _predict(asset, roi, [str(r) for r in regions], out_uri, config, {},
+                    crop_um=crop_um, overwrite=overwrite)  # fmt: skip
+
+
+def predict_points(
+    asset_uri: str,
+    centers_um: NDArray,
+    side_um: float,
+    out_uri: str,
+    config: InferenceConfig,
+    *,
+    overwrite: bool = False,
+) -> RunStats:
+    """Segment cubes of side ``side_um`` around physical (z, y, x) points, e.g. traced somata.
+
+    One output covers all cubes (their bounding box); only tiles touching a cube are predicted
+    and stored. Needs only the fused image, no CCF annotation.
+    """
+    asset = ExaspimAsset(asset_uri)
+    centers = np.atleast_2d(np.asarray(centers_um, dtype=np.float64))
+    roi = RegionRoi.around_points(centers, side_um)
+    log.info("%d cubes of %.0f µm: %.2f mm³", len(centers), side_um, roi.volume_mm3)
+    points = {"centers_um": centers.round(3).tolist(), "side_um": side_um}
+    return _predict(asset, roi, ["points"], out_uri, config, {"points": points},
+                    overwrite=overwrite)  # fmt: skip
+
+
+def _predict(
+    asset: ExaspimAsset,
+    roi: RegionRoi,
+    regions: list[str],
+    out_uri: str,
+    config: InferenceConfig,
+    extra: dict,
+    *,
+    crop_um: float | None = None,
+    overwrite: bool = False,
+) -> RunStats:
     plan = plan_region(asset, roi, config, crop_um=crop_um)
     log.info(
-        "Region %s: %.2f mm³ (%.2f mm³ grown by %.0f%%); level %d box %s; %d/%d tiles touch it",
-        list(regions), atlas_roi.volume_mm3, roi.volume_mm3, 100 * config.region_growth,
+        "Level %d box %s; %d/%d tiles touch the region",
         config.level, plan.region.shape, len(plan.tiles), plan.n_tiles_in_box,
     )  # fmt: skip
 
@@ -114,10 +156,11 @@ def predict_region(
     predictor.self_check(config.batch_size)
 
     source = asset.fused.transforms[config.level]
-    attrs = {PROVENANCE_ATTR: _provenance(asset, regions, roi, plan, config, scaling)}
+    provenance = _provenance(asset, regions, roi, plan, config, scaling) | extra
     out = create_ngff_array(
         out_uri, source=source, region=plan.region, chunks=(config.tile_output,) * 3,
-        dtype="uint8", name="axon_probability", attrs=attrs, overwrite=overwrite,
+        dtype="uint8", name="axon_probability", attrs={PROVENANCE_ATTR: provenance},
+        overwrite=overwrite,
     )  # fmt: skip
     group = zarr.open_group(out_uri, mode="a")
     stats = predict_tiles(
@@ -137,10 +180,14 @@ def prediction_roi(
     """Rebuild the (grown) region a prediction was made for from its provenance.
 
     ``growth`` overrides the recorded growth, e.g. to apply a margin to an older prediction. Its
-    tiles cover ``mask_dilation_um`` (50 µm) around the atlas region, which holds the ~40 µm
-    shell of a 15% growth of MD.
+    tiles cover only ``mask_dilation_um`` (50 µm) around the atlas region: enough for the ~41 µm
+    shell of a 15% growth of MD, not for the ~58 µm of 20% (the outer voxels read as 0).
     """
-    roi = RegionRoi.from_annotation(asset.annotation, provenance["label_ids"])
+    if "points" in provenance:
+        points = provenance["points"]
+        roi = RegionRoi.around_points(np.asarray(points["centers_um"]), points["side_um"])
+    else:
+        roi = RegionRoi.from_annotation(asset.annotation, provenance["label_ids"])
     return roi.grown(provenance.get("region_growth", 0.0) if growth is None else growth)
 
 
@@ -161,7 +208,7 @@ def _provenance(
         "version": __version__,
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
         "asset": asset.root,
-        "regions": [str(r) for r in regions],
+        "regions": list(regions),
         "label_ids": sorted(roi.label_ids),
         "region_growth": roi.growth,
         "region_volume_mm3": roi.volume_mm3,

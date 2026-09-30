@@ -12,7 +12,7 @@
 #   7 WEIGHTS        fine-tuned .safetensors, or a registered name
 #                    (default: /data/trailmap_finetune_v2/best.safetensors — attach model asset
 #                     52a5d51b-5ba7-4e5a-a923-65e4dd04c359 at mount trailmap_finetune_v2)
-#   8 REGION_GROWTH  grow the region by this fraction of its volume         (default: 0.15)
+#   8 REGION_GROWTH  grow the region by this fraction of its volume         (default: 0.2)
 #
 # Pipeline (exaspim-axon run): segment the grown region → skeletonize, remove debris, connect
 # pieces → one SWC per piece → QC figure.
@@ -33,8 +33,11 @@ set -euo pipefail
 #   finetune [STEPS] [MAX_MINUTES] [HOLDOUT_BRAIN] [ENVELOPE_UM]
 #            train, then run the pipeline on 851474 MD with the best weights; 822178 MD is labelled only within
 #            ENVELOPE_UM (default 50) of its traces, blocks are labelled whole
+#   somata [ASSET] [SOMATA] [SIDE_UM] [WEIGHTS]
+#            segment and skeletonize a SIDE_UM cube (default 1200) around each soma listed in
+#            code/somata/<SOMATA>.csv (name, x_um, y_um, z_um), e.g. traced neurons of one brain
 MODE="predict"
-if [[ "${1:-}" == "predict" || "${1:-}" == "finetune" ]]; then MODE="$1"; shift; fi
+if [[ "${1:-}" =~ ^(predict|finetune|somata)$ ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -55,6 +58,18 @@ mkdir -p "${RESULTS}/qc"
 cp "${CODE_DIR}/exaspim-axon-segmentation/SOURCE_COMMIT" "${RESULTS}/"
 uv pip list --python /opt/axon-venv/bin/python > "${RESULTS}/pip_list.txt"
 nvidia-smi > "${RESULTS}/nvidia_smi.txt" 2>&1 || echo "nvidia-smi unavailable" > "${RESULTS}/nvidia_smi.txt"
+
+if [[ "${MODE}" == "somata" ]]; then
+    ASSET="${1:?asset root required}"
+    SOMATA="${CODE_DIR}/somata/${2:?somata list name required}.csv"
+    SIDE_UM="${3:-1200}"
+    WEIGHTS="${4:-/data/trailmap_finetune_v2/best.safetensors}"
+    echo "=== somata · ${ASSET} · $(($(wc -l < "${SOMATA}") - 1)) cubes of ${SIDE_UM} um · ${WEIGHTS}"
+    exaspim-axon -v predict-somata "${ASSET}" --somata "${SOMATA}" --side-um "${SIDE_UM}" \
+        --out "${RESULTS}" --weights "${WEIGHTS}" --batch-size 1 --device cuda \
+        2>&1 | tee "${RESULTS}/somata.log"
+    exit 0
+fi
 
 if [[ "${MODE}" == "finetune" ]]; then
     STEPS="${1:-4000}"
@@ -80,10 +95,10 @@ if [[ "${MODE}" == "finetune" ]]; then
     WEIGHTS="${RESULTS}/finetune/best.safetensors"
     # Evaluate on the unseen brain used before: full MD of 851474 with the fine-tuned weights.
     ASSET="s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36"
-    REGIONS="MD"; LEVEL="2"; CROP_UM="0"; TILE_SIZE="160"; BATCH_SIZE="1"; REGION_GROWTH="0.15"
+    REGIONS="MD"; LEVEL="2"; CROP_UM="0"; TILE_SIZE="160"; BATCH_SIZE="1"; REGION_GROWTH="0.2"
 else
     WEIGHTS="${7:-/data/trailmap_finetune_v2/best.safetensors}"
-    REGION_GROWTH="${8:-0.15}"
+    REGION_GROWTH="${8:-0.2}"
     if [[ "${WEIGHTS}" == /* && ! -f "${WEIGHTS}" ]]; then
         echo "Weights ${WEIGHTS} not found: attach the fine-tuned model data asset" >&2
         exit 1

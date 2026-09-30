@@ -35,8 +35,8 @@ uv run exaspim-axon run \
     --region MD --weights trailmap_finetune_v2/best.safetensors --out results/851474_MD
 ```
 
-1. **Region.** The CCF region is located in the sample-space annotation and grown by 15% of its
-   volume (`--region-growth`), a uniform shell (~40 µm for MD) that absorbs atlas-registration
+1. **Region.** The CCF region is located in the sample-space annotation and grown by 20% of its
+   volume (`--region-growth`), a uniform shell (~58 µm for MD) that absorbs atlas-registration
    error.
 2. **Segment.** The fine-tuned TRAILMAP U-Net predicts axon probability over the grown region on
    fused level 2 (4 × 2.99 × 2.99 µm). A GPU is expected for whole regions (MD: ~6 min on an A10G);

@@ -74,13 +74,38 @@ class RegionRoi:
         )
         return cls(ids, fine[tight.slices], mask_box, fine_tf)
 
+    @classmethod
+    def around_points(
+        cls, centers_um: NDArray, side_um: float, *, spacing_um: float = 20.0
+    ) -> RegionRoi:
+        """Cubes of side ``side_um`` centred on physical (z, y, x) points, as one region.
+
+        The mask lives on a synthetic isotropic ``spacing_um`` grid, so everything that consumes a
+        CCF region (tile planning, normalization sampling, masking) works unchanged. Used to
+        segment around traced somata instead of inside an atlas region.
+        """
+        centers = np.atleast_2d(np.asarray(centers_um, dtype=np.float64))
+        tf = LevelTransform((spacing_um,) * 3, (0.0, 0.0, 0.0))
+        half = side_um / 2
+        lo = np.floor((centers.min(axis=0) - half) / spacing_um).astype(int)
+        hi = np.ceil((centers.max(axis=0) + half) / spacing_um).astype(int) + 1
+        mask = np.zeros(hi - lo, dtype=bool)
+        for center in centers:
+            a = np.ceil((center - half) / spacing_um).astype(int) - lo
+            b = np.ceil((center + half) / spacing_um).astype(int) - lo  # centres in [lo, hi)
+            mask[tuple(slice(i, j) for i, j in zip(a, b, strict=True))] = True
+        tight = _mask_box(mask)
+        start = lo + np.asarray(tight.start)
+        return cls(frozenset(), mask[tight.slices], Box.from_arrays(start, start + tight.shape), tf)
+
     def grown(self, fraction: float) -> RegionRoi:
         """Return the region dilated uniformly (µm) until its volume is ``1 + fraction`` times.
 
         Registration of the atlas to the sample is not voxel-exact, so a margin keeps neurites at
         the region's edge. The shell is the set of outside voxels closest (Euclidean, physical
         units on the anisotropic annotation grid) to the region, cut at the distance that adds
-        ``fraction`` of the original voxel count. On 851474, MD grown by 15% gains a ~40 µm shell.
+        ``fraction`` of the original voxel count. On 851474, MD grown by 20% gains a ~58 µm shell
+        (15%: ~41 µm).
         """
         if fraction <= 0:
             return self

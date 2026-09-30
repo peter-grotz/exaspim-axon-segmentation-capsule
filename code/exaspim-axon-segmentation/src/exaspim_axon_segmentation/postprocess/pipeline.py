@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import zarr
+from numpy.typing import NDArray
 
 from exaspim_axon_segmentation.inference.pipeline import PROVENANCE_ATTR, prediction_roi
 from exaspim_axon_segmentation.io import Box, ExaspimAsset
@@ -138,3 +139,27 @@ def skeletonize_prediction(
         summary["region_volume_mm3"], summary["density_mm_per_mm3"] or 0,
     )  # fmt: skip
     return summary
+
+
+def skeletonize_around(
+    prediction_uri: str,
+    center_um: NDArray,
+    side_um: float,
+    out_dir: Path,
+    config: SkeletonConfig,
+    *,
+    swc_prefix: str,
+) -> dict:
+    """Skeletonize the cube of side ``side_um`` around one (z, y, x) point of a prediction."""
+    group = zarr.open_group(prediction_uri, mode="r")
+    provenance = dict(group.attrs[PROVENANCE_ATTR])
+    grid = ExaspimAsset(provenance["asset"]).fused.transforms[provenance["level"]]
+    box = provenance["region_box"]
+    region = Box.from_arrays(box["start"], box["stop"])
+    half = side_um / 2
+    cube = grid.box_covering(np.subtract(center_um, half), np.add(center_um, half), region.stop)
+    start = np.clip(np.subtract(cube.start, region.start), 0, region.shape)
+    stop = np.clip(np.subtract(cube.stop, region.start), start, region.shape)
+    return skeletonize_prediction(
+        prediction_uri, out_dir, config, crop=Box.from_arrays(start, stop), swc_prefix=swc_prefix
+    )
