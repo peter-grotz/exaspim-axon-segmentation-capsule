@@ -35,7 +35,7 @@ def cleanup_prediction(
     """
     group = zarr.open_group(prediction_uri, mode="r")
     provenance = dict(group.attrs[PROVENANCE_ATTR])
-    asset = ExaspimAsset(provenance["asset"])
+    asset = ExaspimAsset.from_provenance(provenance)
     grid = asset.fused.transforms[provenance["level"]]
     box = provenance["region_box"]
     region = Box.from_arrays(box["start"], box["stop"])
@@ -102,7 +102,7 @@ def skeletonize_prediction(
     dendrites = dendrites or DendriteConfig()
     group = zarr.open_group(prediction_uri, mode="r")
     provenance = dict(group.attrs[PROVENANCE_ATTR])
-    asset = ExaspimAsset(provenance["asset"])
+    asset = ExaspimAsset.from_provenance(provenance)
     grid = asset.fused.transforms[provenance["level"]]
     box = provenance["region_box"]
     region = Box.from_arrays(box["start"], box["stop"])
@@ -177,7 +177,7 @@ def skeletonize_around(
     """Skeletonize the cube of side ``side_um`` around one (z, y, x) point of a prediction."""
     group = zarr.open_group(prediction_uri, mode="r")
     provenance = dict(group.attrs[PROVENANCE_ATTR])
-    grid = ExaspimAsset(provenance["asset"]).fused.transforms[provenance["level"]]
+    grid = ExaspimAsset.from_provenance(provenance).fused.transforms[provenance["level"]]
     box = provenance["region_box"]
     region = Box.from_arrays(box["start"], box["stop"])
     half = side_um / 2

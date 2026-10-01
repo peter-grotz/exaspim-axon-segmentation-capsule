@@ -42,7 +42,7 @@ def render_skeleton_overview(
     """
     group = zarr.open_group(prediction_uri, mode="r")
     provenance = dict(group.attrs[PROVENANCE_ATTR])
-    asset = ExaspimAsset(provenance["asset"])
+    asset = ExaspimAsset.from_provenance(provenance)
     summary = json.loads((skeleton_dir / "summary.json").read_text())
     atlas = RegionRoi.from_annotation(asset.annotation, provenance["label_ids"])
     grown = atlas.grown(summary.get("region_growth", 0.0))

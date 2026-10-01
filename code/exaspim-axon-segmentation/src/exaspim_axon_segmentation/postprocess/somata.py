@@ -22,7 +22,7 @@ def load_somata(asset: ExaspimAsset) -> list[Soma]:
     ``soma_locations.csv`` is missing.
     """
     for name in SOMA_CSVS:
-        uri = f"{asset.root.rstrip('/')}/{name}"
+        uri = f"{asset.meta_root.rstrip('/')}/{name}"
         options = {"anon": asset.anon} if uri.startswith("s3://") else {}
         try:
             with fsspec.open(uri, "rb", **options) as f:
@@ -31,7 +31,7 @@ def load_somata(asset: ExaspimAsset) -> list[Soma]:
         except FileNotFoundError:
             continue
     else:
-        raise FileNotFoundError(f"No soma detections in {asset.root}")
+        raise FileNotFoundError(f"No soma detections in {asset.meta_root}")
     radius_key = next(k for k in rows[0] if k.startswith("Radii"))
     somata = []
     for row in rows:

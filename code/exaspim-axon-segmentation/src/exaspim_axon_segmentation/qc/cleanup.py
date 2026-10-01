@@ -51,7 +51,7 @@ def render_cleanup(
     cats = zarr.open_group(categories_uri, mode="r")
     provenance = dict(prob.attrs[PROVENANCE_ATTR])
     summary = dict(cats.attrs[CLEANUP_ATTR])
-    asset = ExaspimAsset(provenance["asset"])
+    asset = ExaspimAsset.from_provenance(provenance)
     level = provenance["level"]
     tf = asset.fused.transforms[level]
     box = provenance["region_box"]

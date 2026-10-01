@@ -63,7 +63,7 @@ def load(uri: str, label: str, swc_paths: Sequence[Path]) -> TracedPrediction:
     """Open a prediction and map traces + the traced lobe of its region onto its grid."""
     group = zarr.open_group(uri, mode="r")
     provenance = dict(group.attrs[PROVENANCE_ATTR])
-    asset = ExaspimAsset(provenance["asset"])
+    asset = ExaspimAsset.from_provenance(provenance)
     level = provenance["level"]
     tf = asset.fused.transforms[level]
     box = provenance["region_box"]
@@ -134,7 +134,9 @@ def render_trace_comparison(
     x_split = float(np.quantile(ref.points_um[:, 2], 1 - val_fraction))
     scores = [score(p, x_split, threshold=threshold) for p in preds]
 
-    asset = ExaspimAsset(zarr.open_group(uris[0], mode="r").attrs[PROVENANCE_ATTR]["asset"])
+    asset = ExaspimAsset.from_provenance(
+        dict(zarr.open_group(uris[0], mode="r").attrs[PROVENANCE_ATTR])
+    )
     level = zarr.open_group(uris[0], mode="r").attrs[PROVENANCE_ATTR]["level"]
     fig, axes = plt.subplots(2, 1 + len(preds), figsize=(5.2 * (1 + len(preds)), 10.5),
                              layout="constrained", squeeze=False)  # fmt: skip

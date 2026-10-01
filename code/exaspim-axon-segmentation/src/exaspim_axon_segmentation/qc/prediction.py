@@ -94,7 +94,7 @@ def render_prediction_comparison(
     for run in runs[1:]:
         if run.region != ref.region or run.provenance["asset"] != ref.provenance["asset"]:
             raise ValueError(f"{run.uri} covers a different region than {ref.uri}")
-    asset = ExaspimAsset(ref.provenance["asset"])
+    asset = ExaspimAsset.from_provenance(ref.provenance)
     level = ref.provenance["level"]
     tf = asset.fused.transforms[level]
     raw = asset.fused.read(level, ref.region)

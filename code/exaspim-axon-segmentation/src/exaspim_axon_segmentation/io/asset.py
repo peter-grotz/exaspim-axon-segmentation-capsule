@@ -21,10 +21,24 @@ class ExaspimAsset:
         Asset root (local path or ``s3://`` URI).
     anon : bool, default True
         Anonymous S3 access.
+    annotation_root : str, optional
+        Asset holding the CCF alignment and soma detections when they are not in ``root`` (some
+        acquisitions were re-fused into a newer processed asset without them).
     """
 
     root: str
     anon: bool = True
+    annotation_root: str | None = None
+
+    @classmethod
+    def from_provenance(cls, provenance: dict) -> ExaspimAsset:
+        """Rebuild the asset recorded in a prediction's provenance."""
+        return cls(provenance["asset"], annotation_root=provenance.get("annotation_asset"))
+
+    @property
+    def meta_root(self) -> str:
+        """Root holding the CCF alignment and soma detections."""
+        return self.annotation_root or self.root
 
     @property
     def name(self) -> str:
@@ -44,4 +58,4 @@ class ExaspimAsset:
     @cached_property
     def annotation(self) -> NgffImage:
         """CCF annotation (structure IDs) reverse-transformed into sample space."""
-        return NgffImage(f"{self.root.rstrip('/')}/{ANNOTATION_PATH}", anon=self.anon)
+        return NgffImage(f"{self.meta_root.rstrip('/')}/{ANNOTATION_PATH}", anon=self.anon)

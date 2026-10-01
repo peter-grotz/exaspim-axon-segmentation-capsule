@@ -13,6 +13,7 @@
 #                    (default: /data/trailmap_finetune_v2/best.safetensors — attach model asset
 #                     52a5d51b-5ba7-4e5a-a923-65e4dd04c359 at mount trailmap_finetune_v2)
 #   8 REGION_GROWTH  grow the region by this fraction of its volume         (default: 0.2)
+#   9 ANNOTATION     asset with the CCF alignment and soma detections, when they are not in ASSET
 #
 # Pipeline (exaspim-axon run): segment the grown region → skeletonize, remove debris, connect
 # pieces → one SWC per piece → QC figure.
@@ -99,6 +100,7 @@ if [[ "${MODE}" == "finetune" ]]; then
 else
     WEIGHTS="${7:-/data/trailmap_finetune_v2/best.safetensors}"
     REGION_GROWTH="${8:-0.2}"
+    ANNOTATION="${9:-}"
     if [[ "${WEIGHTS}" == /* && ! -f "${WEIGHTS}" ]]; then
         echo "Weights ${WEIGHTS} not found: attach the fine-tuned model data asset" >&2
         exit 1
@@ -110,6 +112,8 @@ tag="${subject}_${REGIONS//,/+}_L${LEVEL}"
 region_args=()
 IFS=, read -ra region_list <<< "${REGIONS}"
 for region in "${region_list[@]}"; do region_args+=(-r "${region}"); done
+annotation_args=()
+if [[ -n "${ANNOTATION:-}" ]]; then annotation_args=(--annotation-asset "${ANNOTATION}"); fi
 crop_args=()
 if [[ "${CROP_UM}" != "0" ]]; then
     crop_args=(--crop-um "${CROP_UM}")
@@ -117,10 +121,10 @@ if [[ "${CROP_UM}" != "0" ]]; then
 fi
 
 echo "=== ${ASSET} · regions ${REGIONS} (+${REGION_GROWTH} volume) · level ${LEVEL} · weights ${WEIGHTS}"
-exaspim-axon -v qc-region "${ASSET}" "${region_args[@]}" \
+exaspim-axon -v qc-region "${ASSET}" "${region_args[@]}" "${annotation_args[@]}" \
     --out "${RESULTS}/qc/${tag}_region_overlay.png"
 exaspim-axon -v run "${ASSET}" "${region_args[@]}" --out "${RESULTS}" --weights "${WEIGHTS}" \
     --level "${LEVEL}" --tile-size "${TILE_SIZE}" --batch-size "${BATCH_SIZE}" --device cuda \
-    --region-growth "${REGION_GROWTH}" "${crop_args[@]}" \
+    --region-growth "${REGION_GROWTH}" "${crop_args[@]}" "${annotation_args[@]}" \
     2>&1 | tee "${RESULTS}/run.log"
 echo "=== done: ${RESULTS}/${tag}_skeleton/swc"

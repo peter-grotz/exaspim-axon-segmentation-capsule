@@ -84,14 +84,16 @@ def predict_region(
     *,
     crop_um: float | None = None,
     overwrite: bool = False,
+    annotation_asset: str | None = None,
 ) -> RunStats:
     """Segment axons inside CCF regions of one asset and write an OME-Zarr probability map.
 
     Output: uint8 probabilities (``p × 255``) on the chosen fused level's grid, covering the
     region's padded bounding box; voxels in tiles that miss the region stay 0. Provenance (config,
-    weights, normalization, region) is stored in the group attributes.
+    weights, normalization, region) is stored in the group attributes. ``annotation_asset`` is
+    the asset holding the CCF alignment and soma detections, if not ``asset_uri`` itself.
     """
-    asset = ExaspimAsset(asset_uri)
+    asset = ExaspimAsset(asset_uri, annotation_root=annotation_asset)
     ontology = CcfOntology.load()
     atlas_roi = RegionRoi.from_annotation(asset.annotation, ontology.resolve(regions))
     roi = atlas_roi.grown(config.region_growth)
@@ -208,6 +210,7 @@ def _provenance(
         "version": __version__,
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
         "asset": asset.root,
+        "annotation_asset": asset.annotation_root,
         "regions": list(regions),
         "label_ids": sorted(roi.label_ids),
         "region_growth": roi.growth,

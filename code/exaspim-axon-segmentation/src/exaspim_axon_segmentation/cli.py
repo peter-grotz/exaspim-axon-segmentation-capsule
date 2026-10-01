@@ -35,12 +35,16 @@ def qc_region(
     region: RegionOpt,
     out: Annotated[Path, typer.Option(help="Output PNG")] = Path("qc/region_overlay.png"),
     detail_um: Annotated[float, typer.Option(help="XY voxel size of zoomed rows")] = 6.0,
+    annotation_asset: Annotated[
+        str | None,
+        typer.Option(help="Asset with the CCF alignment, if not ASSET"),
+    ] = None,
 ) -> None:
     """Draw the sample-space CCF region outline on the fused image for visual confirmation."""
     from exaspim_axon_segmentation.qc import render_region_overlay
 
     ontology = CcfOntology.load()
-    data = ExaspimAsset(asset)
+    data = ExaspimAsset(asset, annotation_root=annotation_asset)
     label_ids = ontology.resolve(region)
     roi = RegionRoi.from_annotation(data.annotation, label_ids)
     log.info("ROI %s: %.3f mm³, bbox %s to %s um", region, roi.volume_mm3, roi.lo_um, roi.hi_um)
@@ -373,6 +377,10 @@ def run(
     crop_um: Annotated[
         float | None, typer.Option(help="Only a cube of this side at the region's core")
     ] = None,
+    annotation_asset: Annotated[
+        str | None,
+        typer.Option(help="Asset with the CCF alignment and soma detections, if not ASSET"),
+    ] = None,
 ) -> None:
     """Full pipeline: segment → skeletonize, remove debris, connect → per-piece SWCs → QC figure.
 
@@ -395,7 +403,8 @@ def run(
         weights=weights, level=level, tile_size=tile_size, batch_size=batch_size, device=device,
         region_growth=region_growth,
     )  # fmt: skip
-    predict_region(asset, region, probability, config, crop_um=crop_um)
+    predict_region(asset, region, probability, config, crop_um=crop_um,
+                   annotation_asset=annotation_asset)  # fmt: skip
     summary = skeletonize_prediction(probability, skeleton_dir, SkeletonConfig(), swc_prefix=tag)
     render_skeleton_overview(probability, skeleton_dir, out / "qc" / f"{tag}_skeleton.png")
     log.info(
