@@ -65,7 +65,10 @@ class ExpandConfig:
     cube_um: float = 800.0
     behind_um: float = 80.0  # a cube starts this far behind its exit, so cut ends overlap
     exit_um: float = 40.0  # an end point is an exit if this far ahead lies outside the done area
-    join_um: float = 12.0  # stitch new cable to old cable this close
+    overlap_um: float = 30.0  # new cubes are skeletonized this far into the done area
+    duplicate_um: float = 6.0  # new cable this close to old cable (in the overlap) is dropped
+    join_um: float = 20.0  # stitch new and old end points this close, ahead of the end
+    join_any_um: float = 8.0  # ... or this close in any direction
     budget_um: float = 100_000.0  # path length followed from the region, per axon
     soma_um: float = 50.0
     max_rounds: int = 40
@@ -121,10 +124,20 @@ class DoneArea:
         self.centres.append(np.asarray(centre, dtype=np.float64))
         self.halves.append(side_um / 2)
 
-    def mask_on(self, grid, box: Box, *, n_cubes: int) -> NDArray[np.bool_]:
-        """Done area on a box of a level grid (region mask plus the first ``n_cubes`` cubes)."""
+    def mask_on(self, grid, box: Box, *, n_cubes: int, shrink_um: float = 0.0) -> NDArray[np.bool_]:
+        """Done area on a box of a level grid (region plus the first ``n_cubes`` cubes).
+
+        ``shrink_um`` erodes it, so new cubes are skeletonized a little into the done area and
+        their cable overlaps the old cut ends.
+        """
         mask = self.roi.sample_on(grid, box)
+        if shrink_um > 0 and mask.any():
+            from scipy.ndimage import minimum_filter
+
+            r = np.round(shrink_um / np.asarray(grid.scale)).astype(int)
+            mask = minimum_filter(mask, size=tuple(2 * r + 1), mode="constant", cval=True)
         for centre, half in zip(self.centres[:n_cubes], self.halves[:n_cubes], strict=True):
+            half = half - shrink_um
             lo = np.ceil((centre - half - np.asarray(grid.translation)) / np.asarray(grid.scale))
             hi = np.floor((centre + half - np.asarray(grid.translation)) / np.asarray(grid.scale))
             a = np.clip(lo.astype(int) - np.asarray(box.start), 0, box.shape)
@@ -250,12 +263,19 @@ def follow_axons(
         predict(boxes)
         new_nodes = 0
         for i, box in enumerate(boxes):
-            before = done.mask_on(grid, box, n_cubes=n_before + i)
+            before = done.mask_on(grid, box, n_cubes=n_before + i, shrink_um=config.overlap_um)
             skeleton = skeletonize(box, ~before, relaxed=True)
             if not len(skeleton.coordinates_um):
                 continue
+            if graph.n:  # drop the new cable that re-traces old cable in the overlap
+                d, _ = cKDTree(graph.coords).query(
+                    skeleton.coordinates_um, distance_upper_bound=config.duplicate_um
+                )
+                skeleton = skeleton.subset(~np.isfinite(d))  # fmt: skip
+                if not len(skeleton.coordinates_um):
+                    continue
             added = graph.add(skeleton, k)
-            _stitch(graph, added, config.join_um)
+            _stitch(graph, added, config.join_um, config.join_any_um)
             new_nodes += len(added)
         followed = _extend_followed(graph, followed)
         if soma_tree is not None:
@@ -323,25 +343,51 @@ def _boxes_touching(roi: RegionRoi, grid, box: Box, side: int) -> list[Box]:
     return boxes
 
 
-def _stitch(graph: Graph, added: NDArray[np.int64], join_um: float) -> None:
-    """Join each new end point (and each old end point) to the nearest node across, if close."""
+def _stitch(graph: Graph, added: NDArray[np.int64], join_um: float, any_um: float) -> None:
+    """Join new end points to old cable and old end points to new cable.
+
+    An end joins the nearest node across within ``any_um``, or within ``join_um`` if that node
+    lies ahead of it (within 45° of the direction the cable arrives in).
+    """
     new = np.zeros(graph.n, dtype=bool)
     new[added] = True
     degree = np.bincount(graph.edges.ravel(), minlength=graph.n)
+    adj = graph.adjacency()
     joins = []
     for side, other in ((new, ~new), (~new, new)):
         tips = np.flatnonzero(side & (degree <= 1))
         targets = np.flatnonzero(other)
         if not len(tips) or not len(targets):
             continue
-        d, j = cKDTree(graph.coords[targets]).query(
-            graph.coords[tips], distance_upper_bound=join_um
-        )
-        ok = np.isfinite(d)
-        joins += list(zip(tips[ok], targets[j[ok]], strict=True))
+        tree = cKDTree(graph.coords[targets])
+        for tip, near in zip(tips, tree.query_ball_point(graph.coords[tips], join_um), strict=True):
+            if not near:
+                continue
+            cand = targets[near]
+            gap = graph.coords[cand] - graph.coords[tip]
+            dist = np.linalg.norm(gap, axis=1)
+            ok = dist <= any_um
+            heading = _tip_heading(adj, graph.coords, tip)
+            if heading is not None:
+                ok |= (gap @ heading) >= 0.7 * dist  # within 45° ahead
+            if ok.any():
+                joins.append((tip, cand[ok][np.argmin(dist[ok])]))
     if joins:
         pairs = np.unique(np.sort(np.asarray(joins), axis=1), axis=0)
         graph.edges = np.concatenate([graph.edges, pairs])
+
+
+def _tip_heading(adj, coords: NDArray, tip: int, steps: int = 4) -> NDArray | None:
+    """Return the direction the cable arrives at ``tip`` in (``steps`` nodes back), if any."""
+    prev, cur = -1, tip
+    for _ in range(steps):
+        nbrs = [v for v in adj.indices[adj.indptr[cur] : adj.indptr[cur + 1]] if v != prev]
+        if not nbrs:
+            break
+        prev, cur = cur, nbrs[0]
+    v = coords[tip] - coords[cur]
+    norm = np.linalg.norm(v)
+    return v / norm if norm > 0 else None
 
 
 def _extend_followed(graph: Graph, followed: NDArray[np.bool_]) -> NDArray[np.bool_]:
