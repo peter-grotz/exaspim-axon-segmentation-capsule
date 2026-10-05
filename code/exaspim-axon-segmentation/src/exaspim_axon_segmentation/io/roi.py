@@ -38,7 +38,12 @@ class RegionRoi:
 
     @classmethod
     def from_annotation(
-        cls, annotation: NgffImage, label_ids: Iterable[int], *, search_level: int | None = None
+        cls,
+        annotation: NgffImage,
+        label_ids: Iterable[int],
+        *,
+        search_level: int | None = None,
+        level: int = 0,
     ) -> RegionRoi:
         """Locate a region: coarse search on a low-resolution level, refine at level 0.
 
@@ -50,6 +55,8 @@ class RegionRoi:
             Structure IDs to include (typically ``CcfOntology.resolve(...)``).
         search_level : int, optional
             Level used for the coarse search; defaults to the second-coarsest.
+        level : int, default 0
+            Level the mask is built on (a coarser one for drawing outlines on large regions).
 
         Raises
         ------
@@ -65,9 +72,9 @@ class RegionRoi:
         # Pad by one coarse voxel: mode-downsampling can drop thin parts of the region.
         coarse_box = _mask_box(coarse).pad(1).clip(coarse.shape)
         lo, hi = annotation.transforms[search_level].physical_extent(coarse_box)
-        fine_tf = annotation.transforms[0]
-        search_box = fine_tf.box_covering(lo, hi, annotation.shape(0))
-        fine = np.isin(annotation.read(0, search_box), list(ids))
+        fine_tf = annotation.transforms[level]
+        search_box = fine_tf.box_covering(lo, hi, annotation.shape(level))
+        fine = np.isin(annotation.read(level, search_box), list(ids))
         tight = _mask_box(fine)
         mask_box = Box.from_arrays(
             np.add(tight.start, search_box.start), np.add(tight.stop, search_box.start)

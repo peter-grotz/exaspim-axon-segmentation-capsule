@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import zarr
@@ -190,3 +191,134 @@ def _display(mip: NDArray) -> NDArray[np.float64]:
     image = mip.astype(np.float32)
     lo, hi = np.percentile(image, [1, 99.7])
     return np.clip((image - lo) / max(hi - lo, 1.0), 0, 1) ** 0.5
+
+
+MAP_PALETTE = {
+    "axon": "#FF6E00",  # axon candidates (Allen brand orange)
+    "dendrite": "#B9B9FF",  # dendrites of detected somata: pale tint of Allen brand blue
+    "footprint": "#F3F0E8",  # region z-footprint (Allen warm page)
+    "outline": "#AAA39F",  # grown region, dashed (Allen warm gray)
+    "soma": "#000000",
+    "spine": "#AAA39F",
+}
+
+
+def render_skeleton_map(
+    skeleton_dir: Path,
+    asset: ExaspimAsset,
+    label_ids,
+    out_path: Path,
+    *,
+    region_growth: float | None = None,
+    title: str | None = None,
+    palette: dict | None = None,
+    head_font: str | None = None,
+    cache: Path | None = None,
+) -> None:
+    """Draw the skeleton as a clean map: no image, the region's z-footprint as a light fill.
+
+    Left: one colour per connected piece (as in the SWCs). Right, when the skeleton is typed:
+    dendrites of detected somata (pale, thin), axon candidates (bright, thick) and the somata
+    (rings). Needs only the skeleton folder and the CCF annotation, so it can be drawn after the
+    fact. Text uses the current matplotlib font (``head_font`` for titles); ``cache`` (an
+    ``.npz``) stores the region footprints so a re-render skips the annotation entirely.
+    """
+    colours = MAP_PALETTE | (palette or {})
+    summary = json.loads((skeleton_dir / "summary.json").read_text())
+    growth = summary.get("region_growth", 0.0) if region_growth is None else region_growth
+    if cache is not None and cache.exists():
+        z = np.load(cache)
+        footprint, grown_fp, lo, cell = z["footprint"], z["grown"], z["lo"], z["cell"]
+    else:
+        # the footprint and outline need no full resolution: level 1 is 8x smaller
+        level = min(1, asset.annotation.n_levels - 1)
+        atlas = RegionRoi.from_annotation(asset.annotation, label_ids, level=level)
+        grown = atlas.grown(growth)
+        cell = np.asarray(atlas.mask_transform.scale)[1:]
+        shift = np.asarray(atlas.mask_transform.translation)[1:]
+        lo = np.asarray(atlas.mask_box.start[1:]) * cell + shift - cell / 2
+        footprint = atlas.mask.any(axis=0)
+        # grown footprint on the atlas footprint's grid, padded to the grown extent
+        g_lo = np.asarray(grown.mask_box.start[1:]) * cell + shift - cell / 2
+        offset = np.round((g_lo - lo) / cell).astype(int)
+        grown_fp = grown.mask.any(axis=0)
+        pad = np.maximum(-offset, 0)
+        lo = lo - pad * cell
+        size = np.maximum(np.asarray(footprint.shape) + pad, offset + pad + grown_fp.shape)
+        footprint = _place(footprint, pad, size)
+        grown_fp = _place(grown_fp, offset + pad, size)
+        if cache is not None:
+            np.savez_compressed(cache, footprint=footprint, grown=grown_fp, lo=lo, cell=cell)
+    hi = lo + np.multiply(footprint.shape, cell)
+    extent = (lo[1], hi[1], hi[0], lo[0])
+    margin = 0.04 * max(hi - lo)
+
+    swc = read_swc(skeleton_dir / "skeleton.swc")
+    zyx, edges = swc.zyx_um, swc.edges()
+    typed = "dendrites" in summary and (swc.types > 0).any()
+    panels = 2 if typed else 1
+    aspect = (hi[0] - lo[0]) / (hi[1] - lo[1])
+    fig, axes = plt.subplots(1, panels, figsize=(9.5 * panels, 9.5 * aspect + 1.2),
+                             layout="constrained", squeeze=False)  # fmt: skip
+    axes = axes[0]
+    fill = np.zeros((*footprint.shape, 4))
+    fill[footprint] = (*matplotlib.colors.to_rgb(colours["footprint"]), 1.0)
+    yy = lo[0] + (np.arange(footprint.shape[0]) + 0.5) * cell[0]
+    xx = lo[1] + (np.arange(footprint.shape[1]) + 0.5) * cell[1]
+    title_font = {"fontfamily": head_font} if head_font else {}
+    for ax in axes:
+        ax.imshow(fill, extent=extent, interpolation="nearest")
+        ax.contour(xx, yy, np.pad(grown_fp, 0).astype(float), levels=[0.5],
+                   colors=colours["outline"], linestyles="--", linewidths=1.0)  # fmt: skip
+        ax.set_xlim(lo[1] - margin, hi[1] + margin)
+        ax.set_ylim(hi[0] + margin, lo[0] - margin)
+        ax.set_aspect("equal")
+        ax.tick_params(length=0, labelsize=8)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            ax.spines[side].set_color(colours["spine"])
+        ax.set_xlabel("x (um)", fontsize=9)
+        ax.set_ylabel("y (um)", fontsize=9)
+    n_pieces = len(summary.get("pieces", []))
+    _draw_skeleton(axes[0], zyx, edges, _piece_colours(zyx, edges), width=0.9)
+    axes[0].set_title(f"{n_pieces} connected pieces · colour per piece (as in its SWC)/",
+                      loc="left", fontsize=14, **title_font)  # fmt: skip
+    if typed:
+        dendrite = swc.types == 3
+        both = dendrite[edges[:, 0]] & dendrite[edges[:, 1]]
+        pale = np.tile(matplotlib.colors.to_rgb(colours["dendrite"]), (len(zyx), 1))
+        _draw_skeleton(axes[1], zyx, edges[both], pale, width=0.5)
+        bright = np.tile(matplotlib.colors.to_rgb(colours["axon"]), (len(zyx), 1))
+        _draw_skeleton(axes[1], zyx, edges[~both], bright, width=2.2)
+        d = summary["dendrites"]
+        try:
+            from exaspim_axon_segmentation.postprocess.somata import load_somata
+
+            somata = np.array([x.center_um for x in load_somata(asset)]).reshape(-1, 3)
+            inside = (somata[:, 1] >= lo[0]) & (somata[:, 1] <= hi[0])
+            inside &= (somata[:, 2] >= lo[1]) & (somata[:, 2] <= hi[1])
+            axes[1].scatter(somata[inside, 2], somata[inside, 1], s=28, facecolors="none",
+                            edgecolors=colours["soma"], linewidths=0.8)  # fmt: skip
+        except FileNotFoundError:
+            pass
+        axes[1].set_title(
+            f"axon candidates {d['axon_candidate_um'] / 1e3:.0f} mm · dendrites of detected "
+            f"somata {d['dendrite_um'] / 1e3:.0f} mm/",
+            loc="left", fontsize=14, **title_font,
+        )  # fmt: skip
+    fig.suptitle(
+        title or f"{asset.subject_id} · md · {summary['length_in_region_um'] / 1e3:.0f} mm of "
+        f"skeleton · region grown by {growth:.0%} (dashed)/",
+        x=0.01, ha="left", fontsize=18, fontweight="bold", **title_font,
+    )  # fmt: skip
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def _place(mask: NDArray[np.bool_], corner: NDArray, size: NDArray) -> NDArray[np.bool_]:
+    """Copy a 2-D mask into a zero canvas of ``size`` at ``corner``."""
+    canvas = np.zeros(tuple(size), dtype=bool)
+    canvas[corner[0] : corner[0] + mask.shape[0], corner[1] : corner[1] + mask.shape[1]] = mask
+    return canvas

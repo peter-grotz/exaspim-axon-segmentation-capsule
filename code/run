@@ -37,8 +37,12 @@ set -euo pipefail
 #   somata [ASSET] [SOMATA] [SIDE_UM] [WEIGHTS]
 #            segment and skeletonize a SIDE_UM cube (default 1200) around each soma listed in
 #            code/somata/<SOMATA>.csv (name, x_um, y_um, z_um), e.g. traced neurons of one brain
+#   expand [ASSET] [MAX_ROUNDS] [MAX_MINUTES] [BUDGET_MM] [ANNOTATION] [WEIGHTS]
+#            follow MD axon candidates out of MD: segment 800 um cubes ahead of every exit,
+#            round after round, until they reach a detected soma, end, or exceed BUDGET_MM
+#            (default 100) of path; results in /results/<subject>_expand/
 MODE="predict"
-if [[ "${1:-}" =~ ^(predict|finetune|somata)$ ]]; then MODE="$1"; shift; fi
+if [[ "${1:-}" =~ ^(predict|finetune|somata|expand)$ ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -59,6 +63,24 @@ mkdir -p "${RESULTS}/qc"
 cp "${CODE_DIR}/exaspim-axon-segmentation/SOURCE_COMMIT" "${RESULTS}/"
 uv pip list --python /opt/axon-venv/bin/python > "${RESULTS}/pip_list.txt"
 nvidia-smi > "${RESULTS}/nvidia_smi.txt" 2>&1 || echo "nvidia-smi unavailable" > "${RESULTS}/nvidia_smi.txt"
+
+if [[ "${MODE}" == "expand" ]]; then
+    ASSET="${1:?asset root required}"
+    MAX_ROUNDS="${2:-40}"
+    MAX_MINUTES="${3:-600}"
+    BUDGET_MM="${4:-100}"
+    ANNOTATION="${5:-}"
+    WEIGHTS="${6:-/data/trailmap_finetune_v2/best.safetensors}"
+    subject="$(basename "${ASSET%/}" | cut -d_ -f2)"
+    extra=()
+    if [[ -n "${ANNOTATION}" ]]; then extra=(--annotation-asset "${ANNOTATION}"); fi
+    echo "=== expand · ${ASSET} · ${MAX_ROUNDS} rounds / ${MAX_MINUTES} min · ${BUDGET_MM} mm"
+    exaspim-axon -v expand "${ASSET}" -r MD --out "${RESULTS}/${subject}_expand" \
+        --weights "${WEIGHTS}" --budget-mm "${BUDGET_MM}" --max-rounds "${MAX_ROUNDS}" \
+        --max-minutes "${MAX_MINUTES}" --batch-size 1 --device cuda "${extra[@]}" \
+        2>&1 | tee "${RESULTS}/expand.log"
+    exit 0
+fi
 
 if [[ "${MODE}" == "somata" ]]; then
     ASSET="${1:?asset root required}"
