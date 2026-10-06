@@ -211,6 +211,7 @@ class Followed:
         self.branches: dict[int, int] = {}
         self.merges: set[tuple[int, int]] = set()
         self.stats = {"branch_points": 0, "arms_kept": 0, "arms_rejected": 0}
+        self.end_reason: dict[int, str] = {}  # why the tracer closed an end (node -> status)
 
     @property
     def mask(self) -> NDArray[np.bool_]:
@@ -434,6 +435,14 @@ def follow_axons(
             near = soma_tree.query(graph.coords[exits[:, 0].astype(int)])[0] < config.soma_um
             exits = exits[~near]
         if not len(exits):
+            if traced.get("open", 0) and k < config.max_rounds:
+                # traces still running inside the done area: trace on before stopping
+                rounds.append({"round": k, "exits": 0, "cubes": 0, "traced": traced,
+                               "followed_mm": round(_length(graph, followed) / 1e3, 1),
+                               "somata_reached": len(reached), **state.stats,
+                               "merges": len(state.merges),
+                               "minutes": round((time.time() - started) / 60, 1)})  # fmt: skip
+                continue
             stop = "no exits"
             break
         if (len(rounds) >= 2 and len(exits) >= 20
@@ -637,12 +646,15 @@ def _trace_ends(graph, state, ended, done, roi, tracer, config, soma_tree, round
         starts = [Start(xyz[_path_back(adj, graph.coords, t, config.trace_back_um)], int(piece[t]))
                   for t in tips]  # fmt: skip
         results = tracer.trace(starts, frags)
-        reopened, bridged = False, set()
+        reopened, bridged = 0, set()
         for tip, r in zip(tips, results, strict=True):
             counts[r["status"]] = counts.get(r["status"], 0) + 1
+            if r.get("restarts"):
+                counts["restarted"] = counts.get("restarted", 0) + 1
             path = r["trace"][1:, ::-1]  # drop the start (the tip itself); to z, y, x
             ended[tip] = True  # this end is dealt with; a continuing trace has a new end
             if r["status"] == "returned_own" or (r["status"] != "linked" and len(path) < 2):
+                state.end_reason[int(tip)] = r["status"]
                 continue
             if r["status"] == "linked":
                 pair = tuple(sorted((int(piece[tip]), int(r["link"]))))
@@ -658,13 +670,15 @@ def _trace_ends(graph, state, ended, done, roi, tracer, config, soma_tree, round
                 ended[new[-1]] = True
             elif r["status"] in ("lost", "terminal"):
                 ended[new[-1]] = True
+                state.end_reason[int(new[-1])] = r["status"]
             else:
-                reopened = True  # maxlen / oob: the trace end is open, trace on next pass
+                reopened += 1  # maxlen / oob: the trace end is open, trace on next pass
         followed = state.grow(graph, config, tracer)
         if not reopened:
             break
     e = np.zeros(graph.n, dtype=bool)
     e[: len(ended)] = ended
+    counts["open"] = int(reopened)  # still running when the passes ran out
     log.info("traced: %s", counts)
     return followed, e, counts
 
@@ -709,6 +723,9 @@ def _write(graph: Graph, state: Followed, out_dir: Path, subject: str) -> None:
     axons = skeleton.subset(followed)
     axons.write_swc(out_dir / "followed_axons.swc")
     axons.write_pieces(out_dir / "followed_swc", f"{subject}_followed")
+    ends = np.array(list(state.end_reason), dtype=np.int64)
+    reasons = np.array(list(state.end_reason.values()), dtype="U16")
     np.savez_compressed(out_dir / "graph.npz", coords=graph.coords, edges=graph.edges,
                         types=graph.types, round=graph.round, source=graph.source,
-                        followed=followed, axon=state.axon)  # fmt: skip
+                        followed=followed, axon=state.axon, end_nodes=ends,
+                        end_reasons=reasons)  # fmt: skip

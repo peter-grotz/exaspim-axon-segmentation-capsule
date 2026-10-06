@@ -91,6 +91,35 @@ def contrast(c: NDArray) -> float:
     return float((core[6:10, 6:10, 6:10].max() - med) / noise)
 
 
+def cone_ahead(image: Level1Image, p: NDArray, h: NDArray, snr_min: float) -> NDArray | None:
+    """Brightest point 12-32 µm ahead of p within 30° of heading h, if the cone is bright.
+
+    Bright means smoothed signal at least ``snr_min`` x the robust noise (MAD of raw counts) in
+    every 8 µm band from 8 to 40 µm ahead; otherwise None.
+    """
+    f = frame(h)
+    centre = p + 24.0 * f[0]
+    g1 = (np.arange(N) - (N - 1) / 2) * VOX
+    grid = np.stack(np.meshgrid(g1, g1, g1, indexing="ij"), -1).reshape(-1, 3)
+    v = image.to_voxel(centre[None] + grid @ f)
+    lo = np.floor(v.min(0)).astype(int) - 2
+    hi = np.ceil(v.max(0)).astype(int) + 3
+    blk = image.block(lo, hi - lo).astype(np.float32)
+    im = map_coordinates(blk, (v - lo).T, order=1, mode="nearest").reshape(N, N, N)
+    sm = gaussian_filter(im, 1.0)
+    a, u, w = np.meshgrid(g1 + 24.0, g1, g1, indexing="ij")
+    cone = (a >= 8) & (a <= 40) & (np.hypot(u, w) <= np.tan(np.radians(30)) * a + 2)
+    med = np.median(im)
+    noise = max(1.4826 * np.median(np.abs(im - med)), 0.5)
+    for d in (8, 16, 24, 32):
+        band = cone & (a >= d) & (a < d + 8)
+        if (sm[band].max() - med) / noise < snr_min:
+            return None
+    pick = cone & (a >= 12) & (a <= 32)
+    k = np.unravel_index(np.argmax(np.where(pick, sm, -np.inf)), sm.shape)
+    return p + a[k] * f[0] + u[k] * f[1] + w[k] * f[2]
+
+
 def recentre(image: Level1Image, p: NDArray, d: NDArray, r: float = 1.0) -> NDArray:
     """Move p within ±r µm perpendicular to d onto the brightness ridge."""
     f = frame(d)
@@ -141,6 +170,7 @@ class _State:
     term_run: int = 0
     dark_run: int = 0
     signal: list = field(default_factory=list)  # centre contrast (signal / noise), per step
+    restarts: int = 0
     alive: bool = True
     status: str = "maxlen"
     link: int = -1
@@ -174,6 +204,8 @@ class RoboTracer:
         batch: int = 32,
         threads: int = 8,
         lost_snr: float = 3.0,
+        restart_snr: float = 5.0,
+        max_restarts: int = 2,
     ):
         import torch
 
@@ -188,6 +220,8 @@ class RoboTracer:
         self.image, self.accept, self.max_steps = image, accept, max_steps
         self.batch, self.pool = batch, ThreadPoolExecutor(threads)
         self.lost_snr = lost_snr  # stop after 2 steps with centre contrast below this
+        # a lost / terminal stop with a clearly bright cone ahead restarts from its brightest point
+        self.restart_snr, self.max_restarts = restart_snr, max_restarts
 
     # ------------------------------------------------------------------ observation and forward
     def _observe(self, st: _State, frags: Fragments, queries: list[int] | None):
@@ -344,8 +378,10 @@ class RoboTracer:
                 elif st.dark_run >= 2:
                     st.alive, st.status = False, "lost"
                     st.trace = st.trace[: max(1, len(st.trace) - 2)]  # drop the dark steps
+                    self._restart(st)
                 elif st.term_run >= 2:
                     st.alive, st.status = False, "terminal"
+                    self._restart(st)
         return [
             dict(
                 status=s.status,
@@ -356,9 +392,29 @@ class RoboTracer:
                 trace=np.asarray(s.trace),
                 rejected=sorted(s.rejected),
                 signal=np.asarray(s.signal),
+                restarts=s.restarts,
             )
             for s in states
         ]
+
+    def _restart(self, st: _State) -> None:
+        """Resume a stopped trace from the brightest point ahead, if the cone ahead is bright."""
+        if st.restarts >= self.max_restarts:
+            return
+        base = st.trace[-1]
+        h = unit(base - st.trace[-2]) if len(st.trace) >= 2 else st.hist[0]
+        q = cone_ahead(self.image, base, h, self.restart_snr)
+        if q is None:
+            return
+        q = recentre(self.image, q, unit(q - base))
+        st.restarts += 1
+        st.alive, st.status, st.dark_run, st.term_run = True, "maxlen", 0, 0
+        h = unit(q - base)
+        st.hist = np.concatenate([h[None], st.hist[:-1]])
+        st.path = np.concatenate([st.path, q[None]])[-60:]
+        st.s += float(np.linalg.norm(q - st.pos))
+        st.pos = q
+        st.trace.append(q.copy())
 
     def score_arms(
         self, starts: list[Start], arms: list[list[int]], frags: Fragments
