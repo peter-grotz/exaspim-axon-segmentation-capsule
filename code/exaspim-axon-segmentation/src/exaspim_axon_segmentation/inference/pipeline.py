@@ -136,18 +136,21 @@ def predict_box(
     config: InferenceConfig,
     *,
     overwrite: bool = False,
+    scaling: IntensityScaling | None = None,
 ) -> RunStats:
     """Segment a physical (z, y, x) box, e.g. the volume spanned by a set of traced neurons.
 
     Only the fused image is needed (no CCF annotation). Skeletonize the output block by block
-    (``skeletonize-blocks``) when it is too large for memory.
+    (``skeletonize-blocks``) when it is too large for memory. Pass ``scaling`` to segment
+    adjacent boxes (slabs of one volume) with one intensity normalization.
     """
     asset = ExaspimAsset(asset_uri)
     lo, hi = np.asarray(lo_um, dtype=np.float64), np.asarray(hi_um, dtype=np.float64)
     roi = RegionRoi.box(lo, hi)
     log.info("Box %s-%s µm: %.1f mm³", lo.round(0).tolist(), hi.round(0).tolist(), roi.volume_mm3)
     box = {"lo_um": lo.round(3).tolist(), "hi_um": hi.round(3).tolist()}
-    return _predict(asset, roi, ["box"], out_uri, config, {"box": box}, overwrite=overwrite)
+    return _predict(asset, roi, ["box"], out_uri, config, {"box": box}, overwrite=overwrite,
+                    scaling=scaling)  # fmt: skip
 
 
 def _predict(
@@ -160,6 +163,7 @@ def _predict(
     *,
     crop_um: float | None = None,
     overwrite: bool = False,
+    scaling: IntensityScaling | None = None,
 ) -> RunStats:
     plan = plan_region(asset, roi, config, crop_um=crop_um)
     log.info(
@@ -167,7 +171,8 @@ def _predict(
         config.level, plan.region.shape, len(plan.tiles), plan.n_tiles_in_box,
     )  # fmt: skip
 
-    scaling = estimate_scaling(config.normalization, asset.fused, config.level, roi)
+    if scaling is None:
+        scaling = estimate_scaling(config.normalization, asset.fused, config.level, roi)
     log.info("Intensity scaling: offset %.1f, scale %.1f", scaling.offset, scaling.scale)
 
     device = resolve_device(config.device)

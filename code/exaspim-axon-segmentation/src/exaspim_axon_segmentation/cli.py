@@ -355,17 +355,25 @@ def predict_box_cmd(
     level: Annotated[int, typer.Option(help="fused.zarr pyramid level")] = 2,
     batch_size: Annotated[int, typer.Option()] = 2,
     device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
+    scaling: Annotated[
+        str | None, typer.Option(help="Fixed intensity scaling offset,scale (one volume in slabs)")
+    ] = None,
 ) -> None:
     """Segment an arbitrary box of an asset (resumable); then use skeletonize-blocks."""
     import numpy as np
 
+    from exaspim_axon_segmentation.inference.normalize import IntensityScaling
     from exaspim_axon_segmentation.inference.pipeline import predict_box
 
     a = np.array([float(v) for v in lo.split(",")])[::-1]
     b = np.array([float(v) for v in hi.split(",")])[::-1]
     config = InferenceConfig(weights=weights, level=level, batch_size=batch_size, device=device,
                              region_growth=0.0)  # fmt: skip
-    predict_box(asset, np.minimum(a, b), np.maximum(a, b), str(out), config)
+    fixed = None
+    if scaling:
+        offset, scale = (float(v) for v in scaling.split(","))
+        fixed = IntensityScaling(offset, scale)
+    predict_box(asset, np.minimum(a, b), np.maximum(a, b), str(out), config, scaling=fixed)
 
 
 @app.command("skeletonize-blocks")
@@ -400,6 +408,38 @@ def skeletonize_blocks(
                resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)  # fmt: skip
     log.info("skeletonize-blocks: %.0f s, peak memory of one process %.1f GB (Linux kB units)",
              time.time() - t0, peak / 1e6)  # fmt: skip
+
+
+@app.command("skeletonize-slabs")
+def skeletonize_slabs_cmd(
+    predictions: Annotated[
+        list[str], typer.Argument(help="Probability OME-Zarrs of adjacent slabs")
+    ],
+    out: Annotated[Path, typer.Option(help="Output directory")],
+    relaxed: Annotated[bool, typer.Option(help="Relaxed cleanup (no anchor rule)")] = False,
+    block_vox: Annotated[int, typer.Option(help="Block core side (voxels)")] = 384,
+    halo_vox: Annotated[int, typer.Option(help="Context around each block (voxels)")] = 32,
+    workers: Annotated[int, typer.Option(help="Processes for the local pass")] = 4,
+    min_swc_um: Annotated[
+        float, typer.Option(help="Write per-piece SWCs from this length")
+    ] = 100.0,
+) -> None:
+    """Skeletonize adjacent slab predictions (e.g. parallel predict-box runs) as one volume."""
+    import resource
+    import time
+
+    from exaspim_axon_segmentation.postprocess.blockwise import BlockConfig
+    from exaspim_axon_segmentation.postprocess.pipeline import skeletonize_slabs
+    from exaspim_axon_segmentation.postprocess.skeleton import SkeletonConfig
+
+    t0 = time.time()
+    config = SkeletonConfig(anchor_um=0, min_piece_um=30.0) if relaxed else SkeletonConfig()
+    block = BlockConfig(block_vox=block_vox, halo_vox=halo_vox, workers=workers)
+    skeletonize_slabs(list(predictions), out, config, block, min_swc_um=min_swc_um)
+    peak = max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+               resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)  # fmt: skip
+    log.info("skeletonize-slabs: %.0f s, peak memory of one process %.1f GB", time.time() - t0,
+             peak / 1e6)  # fmt: skip
 
 
 @app.command("qc-skeleton")

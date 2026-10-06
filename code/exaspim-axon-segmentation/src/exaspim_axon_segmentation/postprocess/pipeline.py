@@ -243,6 +243,69 @@ def skeletonize_prediction_blockwise(
     return summary
 
 
+def skeletonize_slabs(
+    prediction_uris: list[str],
+    out_dir: Path,
+    config: SkeletonConfig,
+    block=None,
+    *,
+    swc_prefix: str | None = None,
+    dendrites: DendriteConfig | None = None,
+    min_swc_um: float = 100.0,
+) -> dict:
+    """Skeletonize several adjacent probability outputs (slabs of one volume) as one volume."""
+    from exaspim_axon_segmentation.postprocess.blockwise import (
+        BlockConfig,
+        SlabSource,
+        skeletonize_blockwise,
+    )
+
+    block = block or BlockConfig()
+    dendrites = dendrites or DendriteConfig()
+    slabs, asset, level = [], None, None
+    for uri in prediction_uris:
+        provenance = dict(zarr.open_group(uri, mode="r").attrs[PROVENANCE_ATTR])
+        box = provenance["region_box"]
+        slabs.append((uri, tuple(box["start"]), tuple(box["stop"])))
+        asset = asset or ExaspimAsset.from_provenance(provenance)
+        if level is not None and provenance["level"] != level:
+            raise ValueError("slabs come from different pyramid levels")
+        level = provenance["level"]
+    source = SlabSource(slabs)
+    grid = asset.fused.transforms[level]
+    region = Box.from_arrays(source.start, source.stop)
+    log.info("%d slabs -> one volume of %s voxels", len(slabs), list(source.shape))
+    skeleton = skeletonize_blockwise(source, grid, region, config, block)
+    summary = {
+        "predictions": prediction_uris, "config": asdict(config), "block": asdict(block),
+        "box": {"start": list(region.start), "stop": list(region.stop)},
+        "nodes": len(skeleton.coordinates_um), "length_um": skeleton.length_um,
+        "gap_filled_length_um": skeleton.filled_length_um, "blockwise": True,
+    }  # fmt: skip
+    out_dir.mkdir(parents=True, exist_ok=True)
+    prefix = swc_prefix or f"{asset.subject_id}_box"
+    somata = _somata_um(asset)
+    if somata is not None and len(skeleton.coordinates_um):
+        near = cKDTree(skeleton.coordinates_um).query(somata)[0] <= dendrites.field_um
+        somata = somata[near]
+        if len(somata):
+            dendrite = label_dendrites(skeleton.coordinates_um, skeleton.edges, somata, dendrites)
+            skeleton = replace(skeleton, node_types=np.where(dendrite, SWC_DENDRITE, SWC_AXON))
+            summary["dendrites"] = {"somata": len(somata)}
+    skeleton.write_swc(out_dir / "skeleton.swc")
+    np.savez_compressed(out_dir / "graph.npz", coords=skeleton.coordinates_um,
+                        edges=skeleton.edges, filled=skeleton.filled)  # fmt: skip
+    if len(skeleton.coordinates_um):
+        keep = np.zeros(len(skeleton.coordinates_um), dtype=bool)
+        for nodes, length in skeleton.pieces():
+            if length >= min_swc_um:
+                keep[nodes] = True
+        summary["pieces"] = skeleton.subset(keep).write_pieces(out_dir / "swc", prefix)
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    log.info("Slab skeleton: %.1f mm -> %s", summary["length_um"] / 1e3, out_dir)
+    return summary
+
+
 def skeletonize_around(
     prediction_uri: str,
     center_um: NDArray,

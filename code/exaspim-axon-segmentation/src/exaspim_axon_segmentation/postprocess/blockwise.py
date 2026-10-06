@@ -53,13 +53,69 @@ class BlockConfig:
     workers: int = 4  # processes for the local pass
 
 
+class SlabSource:
+    """Several probability outputs on one level grid, read as one volume.
+
+    ``slabs`` are (uri, start, stop) with start/stop the outputs' boxes in global level indices
+    (``region_box`` of their provenance). Where slabs overlap, each voxel is read from the slab
+    whose box it is nearest the middle of along the overlap: overlaps are cut at their midpoint.
+    Picklable (URIs only); arrays open lazily in each process.
+    """
+
+    def __init__(self, slabs: list[tuple[str, tuple, tuple]]):
+        self.slabs = [(u, np.asarray(a, int), np.asarray(b, int)) for u, a, b in slabs]
+        self.start = np.min([a for _, a, _ in self.slabs], axis=0)
+        self.stop = np.max([b for _, _, b in self.slabs], axis=0)
+        self.shape = tuple(int(v) for v in self.stop - self.start)
+        # owned box of each slab: overlaps along any axis cut at their midpoint
+        owned = [[a.copy(), b.copy()] for _, a, b in self.slabs]
+        for i in range(len(self.slabs)):
+            for j in range(i + 1, len(self.slabs)):
+                (_, ai, bi), (_, aj, bj) = self.slabs[i], self.slabs[j]
+                lo, hi = np.maximum(ai, aj), np.minimum(bi, bj)
+                if np.any(hi <= lo):
+                    continue
+                k = int(np.argmin(hi - lo))  # the axis they overlap least along: their seam
+                mid = (lo[k] + hi[k]) // 2
+                if ai[k] < aj[k]:
+                    owned[i][1][k] = min(owned[i][1][k], mid)
+                    owned[j][0][k] = max(owned[j][0][k], mid)
+                else:
+                    owned[j][1][k] = min(owned[j][1][k], mid)
+                    owned[i][0][k] = max(owned[i][0][k], mid)
+        self.owned = owned
+        self._arrays = None
+
+    def __getstate__(self):
+        return {k: v for k, v in self.__dict__.items() if k != "_arrays"} | {"_arrays": None}
+
+    def __getitem__(self, key):
+        import zarr
+
+        if self._arrays is None:
+            self._arrays = [zarr.open_group(u, mode="r")["0"] for u, _, _ in self.slabs]
+        lo = np.array([k.start for k in key]) + self.start
+        hi = np.array([k.stop for k in key]) + self.start
+        out = np.zeros(hi - lo, dtype=np.uint8)
+        for (_, start, _), (oa, ob), array in zip(
+            self.slabs, self.owned, self._arrays, strict=True
+        ):
+            a, b = np.maximum(lo, oa), np.minimum(hi, ob)
+            if np.any(b <= a):
+                continue
+            src = tuple(slice(i - s0, j - s0) for i, j, s0 in zip(a, b, start, strict=True))
+            dst = tuple(slice(i - l0, j - l0) for i, j, l0 in zip(a, b, lo, strict=True))
+            out[dst] = np.asarray(array[src])
+        return out
+
+
 def _open(source):
     """Return the probability array of a numpy array or a zarr URI (opened in each worker)."""
     if isinstance(source, str):
         import zarr
 
         return zarr.open_group(source, mode="r")["0"]
-    return source
+    return source  # a numpy array or a SlabSource
 
 
 _WORKER_MASK = None  # set once per worker process (the mask can be a large region array)
@@ -139,7 +195,7 @@ def skeletonize_blockwise(
     t0 = time.time()
     scale = np.asarray(grid.scale, dtype=np.float64)
     shape = np.asarray(_open(source).shape[-3:])
-    parallel = block.workers > 1 and isinstance(source, str)
+    parallel = block.workers > 1 and isinstance(source, (str, SlabSource))
     task_mask = "worker" if parallel and mask_fn is not None else mask_fn
     tasks = [
         (source, lo, hi, cl, ch, scale, config, task_mask)
