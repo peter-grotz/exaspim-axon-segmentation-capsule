@@ -37,12 +37,14 @@ set -euo pipefail
 #   somata [ASSET] [SOMATA] [SIDE_UM] [WEIGHTS]
 #            segment and skeletonize a SIDE_UM cube (default 1200) around each soma listed in
 #            code/somata/<SOMATA>.csv (name, x_um, y_um, z_um), e.g. traced neurons of one brain
-#   expand [ASSET] [MAX_ROUNDS] [MAX_MINUTES] [BUDGET_MM] [ANNOTATION] [WEIGHTS] [TRACER]
+#   expand [ASSET] [MAX_ROUNDS] [MAX_MINUTES] [BUDGET_MM] [ANNOTATION] [WEIGHTS] [TRACER] [SEED]
 #            follow MD axon candidates out of MD: segment 800 um cubes ahead of every exit,
 #            round after round, until they reach a detected soma, end, or exceed BUDGET_MM
 #            (default 100) of path; results in /results/<subject>_expand/. TRACER (default
 #            /data/robo_ls_v2_ckpt/best.pt if attached; "none" = geometric only) traces every
-#            open end on the image with Robo-LS v2 before cubes are placed
+#            open end on the image with Robo-LS v2 before cubes are placed. SEED: a probability.zarr
+#            from an earlier expand run of the same asset (e.g. an attached result asset); it is
+#            copied in first so tiles it already holds are not predicted again
 MODE="predict"
 if [[ "${1:-}" =~ ^(predict|finetune|somata|expand)$ ]]; then MODE="$1"; shift; fi
 
@@ -76,6 +78,12 @@ if [[ "${MODE}" == "expand" ]]; then
     subject="$(basename "${ASSET%/}" | cut -d_ -f2)"
     extra=()
     TRACER="${7:-/data/robo_ls_v2_ckpt/best.pt}"
+    SEED="${8:-}"
+    if [[ -n "${SEED}" ]]; then
+        mkdir -p "${RESULTS}/${subject}_expand"
+        echo "=== expand · seeding predictions from ${SEED}"
+        cp -r "${SEED}" "${RESULTS}/${subject}_expand/probability.zarr"
+    fi
     if [[ -n "${ANNOTATION}" ]]; then extra=(--annotation-asset "${ANNOTATION}"); fi
     if [[ "${TRACER}" != "none" && -f "${TRACER}" ]]; then extra+=(--tracer "${TRACER}"); fi
     echo "=== expand · tracer ${TRACER}"

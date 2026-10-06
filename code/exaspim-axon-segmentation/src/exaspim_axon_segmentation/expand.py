@@ -8,8 +8,12 @@ Starting from a CCF region (grown as for ``run``), each round
    rounds only add tiles),
 3. skeletonizes the new cubes (outside the area done before) and stitches their cable onto the
    skeleton where it meets the old cut ends,
-4. labels the new cable (dendrites of detected somata vs axon candidates) and extends the
-   followed set through axon-candidate cable connected to it.
+4. labels the new cable (dendrites of detected somata vs axon candidates) and extends each
+   followed axon along its *continuation* only: from where it enters new cable it walks on, and
+   at every branch point the tracer's identity head (or, without a tracer, the straightest arm)
+   decides which arms are the same axon. Arms it rejects are left unfollowed, so an axon passing
+   through a dense fibre field does not adopt the field. Every followed node carries the id of
+   its axon; axons meeting are counted as merges instead of being joined.
 
 With a Robo-LS tracer checkpoint (``tracer_checkpoint``), every followed end point is first
 traced on the image: a trace that reaches another piece the network calls the same cell links
@@ -87,6 +91,11 @@ class ExpandConfig:
     trace_steps: int = 60  # 5 µm steps per trace
     trace_accept: float = 0.5  # P(same cell) to link a piece
     trace_back_um: float = 100.0  # path the tracer sees behind an end point
+    arm_um: float = 30.0  # arm length scored at a branch point
+    max_arms: int = 2  # arms kept at one branch point
+    max_branches: int = 20  # branch points (more than one arm kept) per axon
+    straight_cos: float = 0.7  # without a tracer: keep the straightest arm if within 45°
+    runaway: float = 2.0  # stop when exits grow by this factor two rounds running
 
 
 @dataclass
@@ -192,6 +201,133 @@ class DoneArea:
         return inside
 
 
+class Followed:
+    """Which nodes are followed, and by which axon (``axon`` id per node, -1 = not followed)."""
+
+    def __init__(self, graph: Graph, followed: NDArray[np.bool_]):
+        _, piece = connected_components(graph.adjacency(graph.types == AXON), directed=False)
+        self.axon = np.where(followed, piece, -1).astype(np.int64)
+        self.rejected: set[tuple[int, int]] = set()  # (branch node, arm node) decided against
+        self.branches: dict[int, int] = {}
+        self.merges: set[tuple[int, int]] = set()
+        self.stats = {"branch_points": 0, "arms_kept": 0, "arms_rejected": 0}
+
+    @property
+    def mask(self) -> NDArray[np.bool_]:
+        """Followed nodes."""
+        return self.axon >= 0
+
+    def grow(self, graph: Graph, config: ExpandConfig, tracer=None) -> NDArray[np.bool_]:
+        """Extend every axon along its continuation into unfollowed axon-candidate cable."""
+        if len(self.axon) < graph.n:
+            self.axon = np.r_[self.axon, np.full(graph.n - len(self.axon), -1)]
+        a, is_ax = self.axon, graph.types == AXON
+        adj = graph.adjacency(is_ax)
+
+        def nbrs(v):
+            return adj.indices[adj.indptr[v] : adj.indptr[v + 1]]
+
+        frontier = [(u, int(v)) for u in np.flatnonzero(a >= 0) for v in nbrs(u)
+                    if a[v] < 0 and (u, int(v)) not in self.rejected]  # fmt: skip
+        for _ in range(10_000):
+            pending = []
+            while frontier:
+                u, v = frontier.pop()
+                if a[v] >= 0:
+                    if a[v] != a[u]:
+                        self.merges.add(tuple(sorted((int(a[u]), int(a[v])))))
+                    continue
+                a[v] = a[u]
+                arms = [int(w) for w in nbrs(v) if w != u]
+                free = [w for w in arms if a[w] < 0 and (v, w) not in self.rejected]
+                for w in arms:
+                    if a[w] >= 0 and a[w] != a[v]:
+                        self.merges.add(tuple(sorted((int(a[v]), int(a[w])))))
+                if len(arms) == 1 and free:
+                    frontier.append((v, free[0]))  # plain continuation
+                elif free:
+                    pending.append((v, u, free))  # branch point: decide which arms
+            if not pending:
+                break
+            for (v, _, free), keep in zip(pending, self._decide(graph, pending, nbrs, config,
+                                                                 tracer), strict=True):  # fmt: skip
+                self.stats["branch_points"] += 1
+                for w in free:
+                    if w in keep:
+                        frontier.append((v, w))
+                        self.stats["arms_kept"] += 1
+                    else:
+                        self.rejected.add((v, w))
+                        self.stats["arms_rejected"] += 1
+        return self.mask
+
+    def _decide(self, graph, pending, nbrs, config, tracer) -> list[set[int]]:
+        """Arms kept at each pending branch point (v, arrived from u, free arms)."""
+        a = self.axon
+
+        def walk(v, w, length):  # nodes from v through w, up to length µm or the next junction
+            out, prev, cur, run = [], v, w, 0.0
+            while run < length:
+                out.append(cur)
+                run += float(np.linalg.norm(graph.coords[cur] - graph.coords[prev]))
+                nxt = [int(x) for x in nbrs(cur) if x != prev]
+                if len(nxt) != 1:
+                    break
+                prev, cur = cur, nxt[0]
+            return out
+
+        def back(v, u):  # followed path arriving at v (forward order)
+            out, prev, cur, run = [v], v, u, 0.0
+            while run < config.trace_back_um:
+                out.append(cur)
+                run += float(np.linalg.norm(graph.coords[cur] - graph.coords[prev]))
+                nxt = [int(x) for x in nbrs(cur) if x != prev and a[x] == a[v]]
+                if not nxt:
+                    break
+                prev, cur = cur, nxt[0]
+            return out[::-1]
+
+        arms = [[walk(v, w, config.arm_um) for w in free] for v, _, free in pending]
+        if tracer is None:
+            keep = []
+            for (v, u, free), arm in zip(pending, arms, strict=True):
+                path = graph.coords[back(v, u)]
+                heading = path[-1] - path[max(0, len(path) - 6)]
+                heading /= max(np.linalg.norm(heading), 1e-9)
+                ends = graph.coords[[n[-1] for n in arm]] - graph.coords[v]
+                cos = list(ends @ heading / np.maximum(np.linalg.norm(ends, axis=1), 1e-9))
+                best = int(np.argmax(cos))
+                keep.append({free[best]} if cos[best] >= config.straight_cos else set())
+            return keep
+        from exaspim_axon_segmentation.robo.tracer import Fragments, Start
+
+        piece = np.full(graph.n, -1, dtype=np.int64)
+        starts, queries, ids = [], [], []
+        uid = 0
+        for (v, u, _), arm in zip(pending, arms, strict=True):
+            q = []
+            for nodes in arm:
+                piece[nodes] = uid
+                q.append(uid)
+                uid += 1
+            ids.append(q)
+            queries.append(q)
+            starts.append(Start(graph.coords[back(v, u)][:, ::-1], -1))
+        scores = tracer.score_arms(starts, queries, Fragments(graph.coords[:, ::-1], piece))
+        keep = []
+        for (v, _, free), q, sc in zip(pending, ids, scores, strict=True):
+            p = np.array([sc.get(c, 0.0) for c in q])
+            order = [i for i in np.argsort(-p) if p[i] >= config.trace_accept]
+            n_keep = config.max_arms
+            if self.branches.get(int(a[v]), 0) >= config.max_branches:
+                n_keep = 1
+            chosen = order[:n_keep]
+            if len(chosen) > 1:
+                self.branches[int(a[v])] = self.branches.get(int(a[v]), 0) + 1
+            keep.append({free[i] for i in chosen})
+        return keep
+
+
 def follow_axons(
     asset_uri: str,
     regions: list[str],
@@ -256,7 +392,8 @@ def follow_axons(
     predict(_boxes_touching(roi, grid, region_box, inference.tile_output))
     graph = Graph()
     graph.add(skeletonize(region_box, roi.sample_on(grid, region_box), relaxed=False), 0)
-    followed = graph.types == AXON
+    state = Followed(graph, graph.types == AXON)
+    followed = state.mask
     reached: dict[int, dict] = {}
     rounds = []
     stop = "no exits"
@@ -268,11 +405,26 @@ def follow_axons(
         tracer = RoboTracer(config.tracer_checkpoint, Level1Image(asset),
                             device=str(resolve_device(inference.device)),
                             accept=config.trace_accept, max_steps=config.trace_steps)  # fmt: skip
+
+    def write_all(stop: str) -> dict:
+        _write(graph, state, out_dir, asset.subject_id)
+        summary = {
+            "asset": asset.root, "regions": regions, "config": asdict(config), "stop": stop,
+            "rounds": rounds, "cubes": [c.round(1).tolist() for c in done.centres],
+            "cube_um": config.cube_um, "followed_mm": round(_length(graph, state.mask) / 1e3, 1),
+            "axons": len(np.unique(state.axon[state.axon >= 0])),
+            "merges": sorted(list(m) for m in state.merges),
+            "somata_reached": list(reached.values()), "detected_somata": len(somata),
+            "minutes": round((time.time() - started) / 60, 1),
+        }  # fmt: skip
+        (out_dir / "summary.json").write_text(json.dumps(summary, indent=1))
+        return summary
+
     for k in range(1, config.max_rounds + 1):
         traced = {}
         if tracer is not None:
             # the tracer runs from the open ends of the cable added last round (round 0: MD)
-            followed, ended, traced = _trace_ends(graph, followed, ended, done, roi, tracer,
+            followed, ended, traced = _trace_ends(graph, state, ended, done, roi, tracer,
                                                   config, soma_tree, k - 1)  # fmt: skip
         dist = _path_from_region(graph, followed, done, roi)
         exits = _exits(graph, followed, done, config, dist)
@@ -283,6 +435,11 @@ def follow_axons(
             exits = exits[~near]
         if not len(exits):
             stop = "no exits"
+            break
+        if (len(rounds) >= 2 and len(exits) >= 20
+                and len(exits) > config.runaway * rounds[-1]["exits"]
+                and rounds[-1]["exits"] > config.runaway * rounds[-2]["exits"]):  # fmt: skip
+            stop = "runaway"
             break
         if len(done.centres) >= config.max_cubes:
             stop = "cube cap"
@@ -320,7 +477,7 @@ def follow_axons(
             added = graph.add(skeleton, k)
             _stitch(graph, added, config.join_um, config.join_any_um)
             new_nodes += len(added)
-        followed = _extend_followed(graph, followed)
+        followed = state.grow(graph, config, tracer)
         if soma_tree is not None:
             # a followed axon reaches a cell where it touches that cell's soma or the dendrite
             # cable labelled as connected to it
@@ -338,23 +495,17 @@ def follow_axons(
         mm = _length(graph, followed) / 1e3
         rounds.append({"round": k, "exits": len(exits), "cubes": len(cubes), "traced": traced,
                        "new_nodes": int(new_nodes), "followed_mm": round(mm, 1),
-                       "somata_reached": len(reached),
+                       "somata_reached": len(reached), **state.stats,
+                       "merges": len(state.merges),
                        "minutes": round((time.time() - started) / 60, 1)})  # fmt: skip
         log.info("round %d: %d exits -> %d cubes, %.0f mm followed, %d somata reached",
                  k, len(exits), len(cubes), mm, len(reached))  # fmt: skip
         (out_dir / "rounds.json").write_text(json.dumps(rounds, indent=1))
+        write_all("running")  # every round, so a stopped run keeps its maps and SWCs
     else:
         stop = "round cap"
 
-    _write(graph, followed, out_dir, asset.subject_id)
-    summary = {
-        "asset": asset.root, "regions": regions, "config": asdict(config), "stop": stop,
-        "rounds": rounds, "cubes": [c.round(1).tolist() for c in done.centres],
-        "cube_um": config.cube_um, "followed_mm": round(_length(graph, followed) / 1e3, 1),
-        "somata_reached": list(reached.values()), "detected_somata": len(somata),
-        "minutes": round((time.time() - started) / 60, 1),
-    }  # fmt: skip
-    (out_dir / "summary.json").write_text(json.dumps(summary, indent=1))
+    summary = write_all(stop)
     log.info("stopped (%s) after %d rounds: %.0f mm followed, %d somata reached",
              stop, len(rounds), summary["followed_mm"], len(reached))  # fmt: skip
     return summary
@@ -433,17 +584,6 @@ def _tip_heading(adj, coords: NDArray, tip: int, steps: int = 4) -> NDArray | No
     return v / norm if norm > 0 else None
 
 
-def _extend_followed(graph: Graph, followed: NDArray[np.bool_]) -> NDArray[np.bool_]:
-    """Followed = axon-candidate cable connected (through axon candidates) to followed cable."""
-    axon = graph.types == AXON
-    _, piece = connected_components(graph.adjacency(axon), directed=False)
-    grow = np.zeros(piece.max() + 1, dtype=bool)
-    old = np.zeros(graph.n, dtype=bool)
-    old[: len(followed)] = followed
-    grow[piece[old & axon]] = True
-    return axon & grow[piece]
-
-
 def _path_from_region(graph, followed, done, roi) -> NDArray[np.float64]:
     """Path length (µm) along followed cable from the region, per node (inf if unreachable)."""
     inside = np.zeros(graph.n, dtype=bool)
@@ -470,7 +610,7 @@ def _path_back(adj, coords: NDArray, tip: int, length_um: float) -> NDArray[np.i
     return np.asarray(path[::-1])
 
 
-def _trace_ends(graph, followed, ended, done, roi, tracer, config, soma_tree, round_):
+def _trace_ends(graph, state, ended, done, roi, tracer, config, soma_tree, round_):
     """Trace every open followed end point, adding the traced cable and links to the graph.
 
     Returns the extended followed mask, the mask of ends the tracer closed, and outcome counts.
@@ -478,6 +618,7 @@ def _trace_ends(graph, followed, ended, done, roi, tracer, config, soma_tree, ro
     from exaspim_axon_segmentation.robo.tracer import Fragments, Start
 
     counts: dict[str, int] = {}
+    followed = state.grow(graph, config, tracer)
     for _ in range(config.trace_passes):
         e = np.zeros(graph.n, dtype=bool)
         e[: len(ended)] = ended
@@ -519,7 +660,7 @@ def _trace_ends(graph, followed, ended, done, roi, tracer, config, soma_tree, ro
                 ended[new[-1]] = True
             else:
                 reopened = True  # maxlen / oob: the trace end is open, trace on next pass
-        followed = _extend_followed(graph, followed)
+        followed = state.grow(graph, config, tracer)
         if not reopened:
             break
     e = np.zeros(graph.n, dtype=bool)
@@ -558,8 +699,9 @@ def _length(graph: Graph, mask: NDArray[np.bool_]) -> float:
     return float(np.linalg.norm(graph.coords[e[:, 0]] - graph.coords[e[:, 1]], axis=1).sum())
 
 
-def _write(graph: Graph, followed: NDArray[np.bool_], out_dir: Path, subject: str) -> None:
+def _write(graph: Graph, state: Followed, out_dir: Path, subject: str) -> None:
     """Whole stitched skeleton, and the followed axons (one SWC per connected piece)."""
+    followed = state.mask
     blank = np.zeros(graph.n, dtype=bool)
     skeleton = AxonSkeleton(np.zeros((1, 1, 1), dtype=bool), graph.coords, graph.edges,
                             SkeletonConfig(), blank, graph.types)  # fmt: skip
@@ -569,4 +711,4 @@ def _write(graph: Graph, followed: NDArray[np.bool_], out_dir: Path, subject: st
     axons.write_pieces(out_dir / "followed_swc", f"{subject}_followed")
     np.savez_compressed(out_dir / "graph.npz", coords=graph.coords, edges=graph.edges,
                         types=graph.types, round=graph.round, source=graph.source,
-                        followed=followed)  # fmt: skip
+                        followed=followed, axon=state.axon)  # fmt: skip
