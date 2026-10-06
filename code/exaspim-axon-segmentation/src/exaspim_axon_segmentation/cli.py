@@ -512,6 +512,10 @@ def expand(
     annotation_asset: Annotated[
         str | None, typer.Option(help="Asset with the CCF alignment and somata, if not ASSET")
     ] = None,
+    tracer: Annotated[
+        str | None, typer.Option(help="Robo-LS v2 checkpoint (best.pt): trace ends on the image")
+    ] = None,
+    trace_accept: Annotated[float, typer.Option(help="P(same cell) to link a piece")] = 0.5,
 ) -> None:
     """Follow axon candidates out of a region, predicting cubes ahead of them round by round."""
     from exaspim_axon_segmentation.expand import ExpandConfig, follow_axons
@@ -519,5 +523,6 @@ def expand(
     inference = InferenceConfig(weights=weights, batch_size=batch_size, device=device,
                                 region_growth=region_growth)  # fmt: skip
     config = ExpandConfig(cube_um=cube_um, budget_um=budget_mm * 1000, max_rounds=max_rounds,
-                          max_cubes=max_cubes, max_minutes=max_minutes)  # fmt: skip
+                          max_cubes=max_cubes, max_minutes=max_minutes,
+                          tracer_checkpoint=tracer, trace_accept=trace_accept)  # fmt: skip
     follow_axons(asset, list(region), out, inference, config, annotation_asset=annotation_asset)

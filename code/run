@@ -37,10 +37,12 @@ set -euo pipefail
 #   somata [ASSET] [SOMATA] [SIDE_UM] [WEIGHTS]
 #            segment and skeletonize a SIDE_UM cube (default 1200) around each soma listed in
 #            code/somata/<SOMATA>.csv (name, x_um, y_um, z_um), e.g. traced neurons of one brain
-#   expand [ASSET] [MAX_ROUNDS] [MAX_MINUTES] [BUDGET_MM] [ANNOTATION] [WEIGHTS]
+#   expand [ASSET] [MAX_ROUNDS] [MAX_MINUTES] [BUDGET_MM] [ANNOTATION] [WEIGHTS] [TRACER]
 #            follow MD axon candidates out of MD: segment 800 um cubes ahead of every exit,
 #            round after round, until they reach a detected soma, end, or exceed BUDGET_MM
-#            (default 100) of path; results in /results/<subject>_expand/
+#            (default 100) of path; results in /results/<subject>_expand/. TRACER (default
+#            /data/robo_ls_v2_ckpt/best.pt if attached; "none" = geometric only) traces every
+#            open end on the image with Robo-LS v2 before cubes are placed
 MODE="predict"
 if [[ "${1:-}" =~ ^(predict|finetune|somata|expand)$ ]]; then MODE="$1"; shift; fi
 
@@ -73,7 +75,10 @@ if [[ "${MODE}" == "expand" ]]; then
     WEIGHTS="${6:-/data/trailmap_finetune_v2/best.safetensors}"
     subject="$(basename "${ASSET%/}" | cut -d_ -f2)"
     extra=()
+    TRACER="${7:-/data/robo_ls_v2_ckpt/best.pt}"
     if [[ -n "${ANNOTATION}" ]]; then extra=(--annotation-asset "${ANNOTATION}"); fi
+    if [[ "${TRACER}" != "none" && -f "${TRACER}" ]]; then extra+=(--tracer "${TRACER}"); fi
+    echo "=== expand · tracer ${TRACER}"
     echo "=== expand · ${ASSET} · ${MAX_ROUNDS} rounds / ${MAX_MINUTES} min · ${BUDGET_MM} mm"
     exaspim-axon -v expand "${ASSET}" -r MD --out "${RESULTS}/${subject}_expand" \
         --weights "${WEIGHTS}" --budget-mm "${BUDGET_MM}" --max-rounds "${MAX_ROUNDS}" \

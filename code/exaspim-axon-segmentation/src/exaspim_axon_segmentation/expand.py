@@ -11,9 +11,16 @@ Starting from a CCF region (grown as for ``run``), each round
 4. labels the new cable (dendrites of detected somata vs axon candidates) and extends the
    followed set through axon-candidate cable connected to it.
 
+With a Robo-LS tracer checkpoint (``tracer_checkpoint``), every followed end point is first
+traced on the image: a trace that reaches another piece the network calls the same cell links
+it (P(same cell) >= ``trace_accept``); one that runs on along signal adds its path and is traced
+again (``trace_passes`` per round); one that loses the signal, reaches a terminal or turns back
+ends that axon there. Only ends still open after tracing that point out of the done area get
+cubes. Geometric stitching is then only the seam join of new cubes onto old cut ends.
+
 An axon stops being followed when it reaches a detected soma (traced back to its cell), runs
-out of segmented cable, or exceeds ``budget_um`` of path from the region. Caps on rounds, cubes
-and minutes bound one run.
+out of segmented cable (or the tracer ends it), or exceeds ``budget_um`` of path from the
+region. Caps on rounds, cubes and minutes bound one run.
 """
 
 from __future__ import annotations
@@ -56,6 +63,7 @@ from exaspim_axon_segmentation.postprocess.somata import load_somata
 log = logging.getLogger(__name__)
 
 AXON, DENDRITE = 2, 3
+SEGMENTED, TRACED = 0, 1
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,11 @@ class ExpandConfig:
     max_rounds: int = 40
     max_cubes: int = 800
     max_minutes: float = 600.0
+    tracer_checkpoint: str | None = None  # Robo-LS v2 best.pt; None = geometric only
+    trace_passes: int = 3  # traces chained per end point per round
+    trace_steps: int = 60  # 5 µm steps per trace
+    trace_accept: float = 0.5  # P(same cell) to link a piece
+    trace_back_um: float = 100.0  # path the tracer sees behind an end point
 
 
 @dataclass
@@ -84,6 +97,7 @@ class Graph:
     edges: NDArray[np.int64] = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int64))
     types: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     round: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    source: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
 
     @property
     def n(self) -> int:
@@ -99,7 +113,21 @@ class Graph:
         types = np.full(len(skeleton.coordinates_um), AXON) if types is None else types
         self.types = np.concatenate([self.types, types])
         self.round = np.concatenate([self.round, np.full(len(types), round_)])
+        self.source = np.concatenate([self.source, np.full(len(types), SEGMENTED)])
         return np.arange(offset, self.n)
+
+    def add_path(self, start: int, points: NDArray, round_: int) -> NDArray[np.int64]:
+        """Append a traced polyline (z, y, x µm) hanging off node ``start``; returns new nodes."""
+        offset, m = self.n, len(points)
+        if not m:
+            return np.zeros(0, dtype=np.int64)
+        chain = np.r_[start, np.arange(offset, offset + m)]
+        self.coords = np.concatenate([self.coords, points])
+        self.edges = np.concatenate([self.edges, np.stack([chain[:-1], chain[1:]], axis=1)])
+        self.types = np.concatenate([self.types, np.full(m, AXON)])
+        self.round = np.concatenate([self.round, np.full(m, round_)])
+        self.source = np.concatenate([self.source, np.full(m, TRACED)])
+        return np.arange(offset, offset + m)
 
     def adjacency(self, mask: NDArray[np.bool_] | None = None):
         """Symmetric edge-length adjacency, optionally of the nodes in ``mask`` only."""
@@ -232,9 +260,24 @@ def follow_axons(
     reached: dict[int, dict] = {}
     rounds = []
     stop = "no exits"
+    tracer, ended = None, np.zeros(0, dtype=bool)
+    if config.tracer_checkpoint:
+        from exaspim_axon_segmentation.robo.image import Level1Image
+        from exaspim_axon_segmentation.robo.tracer import RoboTracer
+
+        tracer = RoboTracer(config.tracer_checkpoint, Level1Image(asset),
+                            device=str(resolve_device(inference.device)),
+                            accept=config.trace_accept, max_steps=config.trace_steps)  # fmt: skip
     for k in range(1, config.max_rounds + 1):
+        traced = {}
+        if tracer is not None:
+            # the tracer runs from the open ends of the cable added last round (round 0: MD)
+            followed, ended, traced = _trace_ends(graph, followed, ended, done, roi, tracer,
+                                                  config, soma_tree, k - 1)  # fmt: skip
         dist = _path_from_region(graph, followed, done, roi)
         exits = _exits(graph, followed, done, config, dist)
+        if len(exits) and len(ended):
+            exits = exits[~ended[exits[:, 0].astype(int)]]
         if soma_tree is not None and len(exits):
             near = soma_tree.query(graph.coords[exits[:, 0].astype(int)])[0] < config.soma_um
             exits = exits[~near]
@@ -293,7 +336,7 @@ def follow_axons(
                                                    "round": k, "node": int(node),
                                                    "distance_um": round(float(d), 1)})  # fmt: skip
         mm = _length(graph, followed) / 1e3
-        rounds.append({"round": k, "exits": len(exits), "cubes": len(cubes),
+        rounds.append({"round": k, "exits": len(exits), "cubes": len(cubes), "traced": traced,
                        "new_nodes": int(new_nodes), "followed_mm": round(mm, 1),
                        "somata_reached": len(reached),
                        "minutes": round((time.time() - started) / 60, 1)})  # fmt: skip
@@ -414,6 +457,77 @@ def _path_from_region(graph, followed, done, roi) -> NDArray[np.float64]:
     return dijkstra(graph.adjacency(followed), directed=False, indices=seeds, min_only=True)
 
 
+def _path_back(adj, coords: NDArray, tip: int, length_um: float) -> NDArray[np.int64]:
+    """Nodes from ~``length_um`` behind ``tip`` up to it, along the cable (forward order)."""
+    path, prev, cur, run = [tip], -1, tip, 0.0
+    while run < length_um:
+        nbrs = [v for v in adj.indices[adj.indptr[cur] : adj.indptr[cur + 1]] if v != prev]
+        if not nbrs:
+            break
+        run += float(np.linalg.norm(coords[nbrs[0]] - coords[cur]))
+        prev, cur = cur, nbrs[0]
+        path.append(cur)
+    return np.asarray(path[::-1])
+
+
+def _trace_ends(graph, followed, ended, done, roi, tracer, config, soma_tree, round_):
+    """Trace every open followed end point, adding the traced cable and links to the graph.
+
+    Returns the extended followed mask, the mask of ends the tracer closed, and outcome counts.
+    """
+    from exaspim_axon_segmentation.robo.tracer import Fragments, Start
+
+    counts: dict[str, int] = {}
+    for _ in range(config.trace_passes):
+        e = np.zeros(graph.n, dtype=bool)
+        e[: len(ended)] = ended
+        ended = e
+        degree = np.bincount(graph.edges.ravel(), minlength=graph.n)
+        dist = _path_from_region(graph, followed, done, roi)
+        tips = np.flatnonzero(followed & (degree == 1) & ~ended & (dist < config.budget_um))
+        if soma_tree is not None and len(tips):
+            tips = tips[soma_tree.query(graph.coords[tips])[0] >= config.soma_um]
+        if not len(tips):
+            break
+        _, piece = connected_components(graph.adjacency(), directed=False)
+        xyz = graph.coords[:, ::-1]
+        frags = Fragments(xyz, piece.astype(np.int64))
+        adj = graph.adjacency(followed)
+        starts = [Start(xyz[_path_back(adj, graph.coords, t, config.trace_back_um)], int(piece[t]))
+                  for t in tips]  # fmt: skip
+        results = tracer.trace(starts, frags)
+        reopened, bridged = False, set()
+        for tip, r in zip(tips, results, strict=True):
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
+            path = r["trace"][1:, ::-1]  # drop the start (the tip itself); to z, y, x
+            ended[tip] = True  # this end is dealt with; a continuing trace has a new end
+            if r["status"] == "returned_own" or (r["status"] != "linked" and len(path) < 2):
+                continue
+            if r["status"] == "linked":
+                pair = tuple(sorted((int(piece[tip]), int(r["link"]))))
+                if pair in bridged:
+                    continue  # the gap was traced from its other end already
+                bridged.add(pair)
+            new = graph.add_path(tip, path, round_)
+            ended = np.r_[ended, np.zeros(len(new), dtype=bool)]
+            if r["status"] == "linked":
+                members = np.flatnonzero(piece == r["link"])
+                j = members[np.argmin(np.linalg.norm(graph.coords[members] - path[-1], axis=1))]
+                graph.edges = np.concatenate([graph.edges, [[new[-1], j]]])
+                ended[new[-1]] = True
+            elif r["status"] in ("lost", "terminal"):
+                ended[new[-1]] = True
+            else:
+                reopened = True  # maxlen / oob: the trace end is open, trace on next pass
+        followed = _extend_followed(graph, followed)
+        if not reopened:
+            break
+    e = np.zeros(graph.n, dtype=bool)
+    e[: len(ended)] = ended
+    log.info("traced: %s", counts)
+    return followed, e, counts
+
+
 def _exits(graph, followed, done, config, dist) -> NDArray[np.float64]:
     """Rows (node, direction z, y, x) for followed end points pointing out of the done area."""
     degree = np.bincount(graph.edges.ravel(), minlength=graph.n)
@@ -454,4 +568,5 @@ def _write(graph: Graph, followed: NDArray[np.bool_], out_dir: Path, subject: st
     axons.write_swc(out_dir / "followed_axons.swc")
     axons.write_pieces(out_dir / "followed_swc", f"{subject}_followed")
     np.savez_compressed(out_dir / "graph.npz", coords=graph.coords, edges=graph.edges,
-                        types=graph.types, round=graph.round, followed=followed)  # fmt: skip
+                        types=graph.types, round=graph.round, source=graph.source,
+                        followed=followed)  # fmt: skip
