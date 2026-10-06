@@ -94,6 +94,8 @@ class ExpandConfig:
     arm_um: float = 30.0  # arm length scored at a branch point
     max_arms: int = 2  # arms kept at one branch point
     max_branches: int = 20  # branch points (more than one arm kept) per axon
+    twig_um: float = 15.0  # side branches shorter than this are pruned from new skeletons
+    trusted_cos: float = 0.5  # a tracer link continues along the arm within 60° of the trace
     straight_cos: float = 0.7  # without a tracer: keep the straightest arm if within 45°
     runaway: float = 2.0  # stop when exits grow by this factor two rounds running
 
@@ -212,6 +214,9 @@ class Followed:
         self.merges: set[tuple[int, int]] = set()
         self.stats = {"branch_points": 0, "arms_kept": 0, "arms_rejected": 0}
         self.end_reason: dict[int, str] = {}  # why the tracer closed an end (node -> status)
+        # nodes a tracer link entered, with the trace's heading there: the link already showed
+        # identity, so the arm that continues the trace is followed without another identity test
+        self.trusted: dict[int, NDArray] = {}
 
     @property
     def mask(self) -> NDArray[np.bool_]:
@@ -246,6 +251,12 @@ class Followed:
                         self.merges.add(tuple(sorted((int(a[v]), int(a[w])))))
                 if len(arms) == 1 and free:
                     frontier.append((v, free[0]))  # plain continuation
+                elif free and v in self.trusted:
+                    heading = self.trusted.pop(v)
+                    d = graph.coords[free] - graph.coords[v]
+                    cos = d @ heading / np.maximum(np.linalg.norm(d, axis=1), 1e-9)
+                    if cos.max() >= config.trusted_cos:
+                        frontier.append((v, free[int(np.argmax(cos))]))
                 elif free:
                     pending.append((v, u, free))  # branch point: decide which arms
             if not pending:
@@ -266,15 +277,24 @@ class Followed:
         """Arms kept at each pending branch point (v, arrived from u, free arms)."""
         a = self.axon
 
-        def walk(v, w, length):  # nodes from v through w, up to length µm or the next junction
-            out, prev, cur, run = [], v, w, 0.0
-            while run < length:
+        def walk(v, w, length):  # cable reachable from v through w within length µm, nearest first
+            import heapq
+
+            dist, heap, out = {w: float(np.linalg.norm(graph.coords[w] - graph.coords[v]))}, [], []
+            heapq.heappush(heap, (dist[w], w))
+            while heap:
+                d, cur = heapq.heappop(heap)
+                if d > dist.get(cur, np.inf) or d > length:
+                    continue
                 out.append(cur)
-                run += float(np.linalg.norm(graph.coords[cur] - graph.coords[prev]))
-                nxt = [int(x) for x in nbrs(cur) if x != prev]
-                if len(nxt) != 1:
-                    break
-                prev, cur = cur, nxt[0]
+                for x in nbrs(cur):
+                    x = int(x)
+                    if x == v:
+                        continue
+                    nd = d + float(np.linalg.norm(graph.coords[x] - graph.coords[cur]))
+                    if nd < dist.get(x, np.inf) and nd <= length:
+                        dist[x] = nd
+                        heapq.heappush(heap, (nd, x))
             return out
 
         def back(v, u):  # followed path arriving at v (forward order)
@@ -378,7 +398,8 @@ def follow_axons(
         if keep is not None:
             probability[~keep] = 0
         cfg = SkeletonConfig(anchor_um=0, min_piece_um=30.0) if relaxed else SkeletonConfig()
-        skeleton = skeletonize_probability(probability, grid, box, cfg)
+        skeleton = _prune_twigs(skeletonize_probability(probability, grid, box, cfg),
+                                config.twig_um)  # fmt: skip
         if len(skeleton.coordinates_um) and len(somata):
             dendrite = label_dendrites(skeleton.coordinates_um, skeleton.edges, somata,
                                        DendriteConfig())  # fmt: skip
@@ -632,14 +653,13 @@ def _trace_ends(graph, state, ended, done, roi, tracer, config, soma_tree, round
         e = np.zeros(graph.n, dtype=bool)
         e[: len(ended)] = ended
         ended = e
-        degree = np.bincount(graph.edges.ravel(), minlength=graph.n)
         dist = _path_from_region(graph, followed, done, roi)
-        tips = np.flatnonzero(followed & (degree == 1) & ~ended & (dist < config.budget_um))
+        tips = np.flatnonzero(_open_ends(graph, followed) & ~ended & (dist < config.budget_um))
         if soma_tree is not None and len(tips):
             tips = tips[soma_tree.query(graph.coords[tips])[0] >= config.soma_um]
         if not len(tips):
             break
-        _, piece = connected_components(graph.adjacency(), directed=False)
+        piece = _pieces(graph, state)
         xyz = graph.coords[:, ::-1]
         frags = Fragments(xyz, piece.astype(np.int64))
         adj = graph.adjacency(followed)
@@ -668,6 +688,9 @@ def _trace_ends(graph, state, ended, done, roi, tracer, config, soma_tree, round
                 j = members[np.argmin(np.linalg.norm(graph.coords[members] - path[-1], axis=1))]
                 graph.edges = np.concatenate([graph.edges, [[new[-1], j]]])
                 ended[new[-1]] = True
+                if len(path) >= 2:
+                    h = path[-1] - path[-2]
+                    state.trusted[int(j)] = h / max(np.linalg.norm(h), 1e-9)
             elif r["status"] in ("lost", "terminal"):
                 ended[new[-1]] = True
                 state.end_reason[int(new[-1])] = r["status"]
@@ -683,10 +706,62 @@ def _trace_ends(graph, state, ended, done, roi, tracer, config, soma_tree, round
     return followed, e, counts
 
 
+def _open_ends(graph: Graph, followed: NDArray[np.bool_]) -> NDArray[np.bool_]:
+    """Return followed nodes with exactly one followed neighbour.
+
+    These are the ends of followed cable, including ends at a branch point whose arms were all
+    rejected (unfollowed cable may still be attached there).
+    """
+    e = graph.edges[followed[graph.edges[:, 0]] & followed[graph.edges[:, 1]]]
+    return followed & (np.bincount(e.ravel(), minlength=graph.n) == 1)
+
+
+def _pieces(graph: Graph, state: Followed) -> NDArray[np.int64]:
+    """Piece label per node for the tracer.
+
+    Each followed axon is one piece (its own cable); unfollowed cable is split into its
+    connected pieces, so a trace can link to the grey continuation of its own axon.
+    """
+    followed = state.mask
+    _, comp = connected_components(graph.adjacency(~followed), directed=False)
+    top = int(state.axon.max()) + 1 if followed.any() else 0
+    return np.where(followed, state.axon[: graph.n], top + comp).astype(np.int64)
+
+
+def _prune_twigs(skeleton: AxonSkeleton, min_um: float) -> AxonSkeleton:
+    """Drop side branches shorter than min_um (end point to branch point), twice over."""
+    for _ in range(2):
+        xyz, n = skeleton.coordinates_um, len(skeleton.coordinates_um)
+        if not n or not len(skeleton.edges):
+            return skeleton
+        nbrs = [[] for _ in range(n)]
+        for a, b in skeleton.edges:
+            nbrs[a].append(b)
+            nbrs[b].append(a)
+        deg = np.array([len(x) for x in nbrs])
+        drop = np.zeros(n, dtype=bool)
+        for tip in np.flatnonzero(deg == 1):
+            path, prev, cur, run = [tip], -1, tip, 0.0
+            while True:
+                nxt = [x for x in nbrs[cur] if x != prev]
+                if len(nxt) != 1:
+                    break
+                run += float(np.linalg.norm(xyz[nxt[0]] - xyz[cur]))
+                prev, cur = cur, nxt[0]
+                if deg[cur] >= 3 or run > min_um:
+                    break
+                path.append(cur)
+            if deg[cur] >= 3 and run <= min_um:
+                drop[path] = True
+        if not drop.any():
+            return skeleton
+        skeleton = skeleton.subset(~drop)
+    return skeleton
+
+
 def _exits(graph, followed, done, config, dist) -> NDArray[np.float64]:
     """Rows (node, direction z, y, x) for followed end points pointing out of the done area."""
-    degree = np.bincount(graph.edges.ravel(), minlength=graph.n)
-    tips = np.flatnonzero(followed & (degree == 1) & (dist < config.budget_um))
+    tips = np.flatnonzero(_open_ends(graph, followed) & (dist < config.budget_um))
     if not len(tips):
         return np.zeros((0, 4))
     adj = graph.adjacency(followed)

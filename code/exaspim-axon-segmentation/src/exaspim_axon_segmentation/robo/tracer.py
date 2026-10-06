@@ -340,14 +340,16 @@ class RoboTracer:
         return out
 
     # ------------------------------------------------------------------ public
-    def trace(self, starts: list[Start], frags: Fragments) -> list[dict]:
+    def trace(
+        self, starts: list[Start], frags: Fragments, max_steps: int | None = None
+    ) -> list[dict]:
         """Trace from every start until it stops.
 
         A trace stops when it links to another piece (P(own) >= accept), returns to its own piece,
         reaches a terminal, leaves the image or takes ``max_steps`` steps.
         """
         states = [_initial(s) for s in starts]
-        for _ in range(self.max_steps):
+        for _ in range(self.max_steps if max_steps is None else max_steps):
             act = [s for s in states if s.alive]
             if not act:
                 break
