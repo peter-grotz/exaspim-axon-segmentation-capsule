@@ -60,11 +60,7 @@ def scalars(f: NDArray, hist: NDArray, soma_vec: NDArray) -> NDArray[np.float32]
 def crop(
     image: Level1Image, p: NDArray, f: NDArray, probe: NDArray
 ) -> tuple[NDArray[np.float32], float, float]:
-    """Return the normalised heading-aligned 48³ crop at 1.5 µm, with two raw signal levels.
-
-    The levels are counts above background at the centre (brightest voxel within ~2 µm) and
-    along the probed path.
-    """
+    """Return the normalised heading-aligned 48³ crop at 1.5 µm and its centre contrast."""
     g1 = (np.arange(N) - (N - 1) / 2) * VOX
     grid = np.stack(np.meshgrid(g1, g1, g1, indexing="ij"), -1).reshape(-1, 3)
     pts = np.concatenate([p[None] + grid @ f, probe], 0)
@@ -75,13 +71,24 @@ def crop(
     vv = (v - lo).T
     c = map_coordinates(blk, vv[:, : N**3], order=1, mode="nearest").reshape(N, N, N)
     if not np.any(c):
-        return np.zeros((N, N, N), np.float32), 0.0, 0.0
+        return np.zeros((N, N, N), np.float32), 0.0
     bv = map_coordinates(maximum_filter(blk, size=3), vv[:, N**3 :], order=1, mode="nearest")
     bg = np.percentile(c, 20)
     b = np.median(np.sort(bv)[len(bv) // 2 :])
+    return ((c - bg) / max(b - bg, 8.0)).astype(np.float32), contrast(c)
+
+
+def contrast(c: NDArray) -> float:
+    """Return the signal-to-noise at the centre of a crop.
+
+    Brightest smoothed voxel within ~2 µm, above the crop's median, in units of its robust noise
+    (MAD); robust to the few-count data of dim brains.
+    """
     m = N // 2
-    centre = float(c[m - 2 : m + 2, m - 2 : m + 2, m - 2 : m + 2].max() - bg)
-    return ((c - bg) / max(b - bg, 8.0)).astype(np.float32), centre, float(b - bg)
+    core = gaussian_filter(c[m - 8 : m + 8, m - 8 : m + 8, m - 8 : m + 8], 1.0)
+    med = np.median(c)
+    noise = max(1.4826 * np.median(np.abs(c - med)), 0.5)
+    return float((core[6:10, 6:10, 6:10].max() - med) / noise)
 
 
 def recentre(image: Level1Image, p: NDArray, d: NDArray, r: float = 1.0) -> NDArray:
@@ -133,7 +140,7 @@ class _State:
     s: float = 0.0
     term_run: int = 0
     dark_run: int = 0
-    ref: float = float("nan")  # signal of the arriving path (raw counts above background)
+    signal: list = field(default_factory=list)  # centre contrast (signal / noise), per step
     alive: bool = True
     status: str = "maxlen"
     link: int = -1
@@ -166,7 +173,7 @@ class RoboTracer:
         max_steps: int = 60,
         batch: int = 32,
         threads: int = 8,
-        lost_fraction: float = 0.25,
+        lost_snr: float = 3.0,
     ):
         import torch
 
@@ -180,14 +187,12 @@ class RoboTracer:
         self.dirs = grid_dirs2().to(device).view(-1, 3)
         self.image, self.accept, self.max_steps = image, accept, max_steps
         self.batch, self.pool = batch, ThreadPoolExecutor(threads)
-        self.lost_fraction = lost_fraction  # stop after 2 steps below this share of the signal
+        self.lost_snr = lost_snr  # stop after 2 steps with centre contrast below this
 
     # ------------------------------------------------------------------ observation and forward
     def _observe(self, st: _State, frags: Fragments, queries: list[int] | None):
         f = frame(st.hist[0])
-        image, centre, along = crop(self.image, st.pos, f, polyline_back(st.path, PROBE_S))
-        if not np.isfinite(st.ref):
-            st.ref = max(along, 1.0)
+        image, centre = crop(self.image, st.pos, f, polyline_back(st.path, PROBE_S))
         jj = np.asarray(frags.tree.query_ball_point(st.pos, HALF * 1.75), int)
         loc = (frags.points[jj] - st.pos) @ f.T if len(jj) else np.zeros((0, 3))
         inb = np.all(np.abs(loc) <= HALF, 1) if len(loc) else np.zeros(0, bool)
@@ -297,7 +302,8 @@ class RoboTracer:
             for st, (_, ev, pid, centre), pn in zip(act, results, nexts, strict=True):
                 st.steps += 1
                 st.term_run = st.term_run + 1 if ev[2] > 0.8 else 0
-                st.dark_run = st.dark_run + 1 if centre < self.lost_fraction * st.ref else 0
+                st.signal.append(round(centre, 2))
+                st.dark_run = st.dark_run + 1 if centre < self.lost_snr else 0
                 linked = hit_own = False
                 for qpt in (0.5 * (st.pos + pn), pn):
                     dd, jj = frags.tree.query(qpt, k=12, distance_upper_bound=3.0)
@@ -349,6 +355,7 @@ class RoboTracer:
                 path_um=s.s,
                 trace=np.asarray(s.trace),
                 rejected=sorted(s.rejected),
+                signal=np.asarray(s.signal),
             )
             for s in states
         ]
