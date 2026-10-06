@@ -116,7 +116,7 @@ if [[ "${MODE}" == "box" ]]; then
     for cleanup in default relaxed; do
         flag=(); [[ "${cleanup}" == "relaxed" ]] && flag=(--relaxed)
         t=$(date +%s)
-        /usr/bin/time -v exaspim-axon -v skeletonize-blocks "${out}/probability.zarr" \
+        exaspim-axon -v skeletonize-blocks "${out}/probability.zarr" \
             --out "${out}/skeleton_${cleanup}" --workers "${WORKERS}" --min-swc-um 100 "${flag[@]}" \
             2>&1 | tee "${RESULTS}/box_skeleton_${cleanup}.log"
         echo "=== skeleton (${cleanup}) took $(( $(date +%s) - t )) s"

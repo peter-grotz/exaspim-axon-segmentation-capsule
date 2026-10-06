@@ -390,8 +390,16 @@ def skeletonize_blocks(
 
     config = SkeletonConfig(anchor_um=0, min_piece_um=30.0) if relaxed else SkeletonConfig()
     block = BlockConfig(block_vox=block_vox, halo_vox=halo_vox, workers=workers)
+    import resource
+    import time
+
+    t0 = time.time()
     skeletonize_prediction_blockwise(prediction, out, config, block, mask_region=mask_region,
                                      min_swc_um=min_swc_um)  # fmt: skip
+    peak = max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+               resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)  # fmt: skip
+    log.info("skeletonize-blocks: %.0f s, peak memory of one process %.1f GB (Linux kB units)",
+             time.time() - t0, peak / 1e6)  # fmt: skip
 
 
 @app.command("qc-skeleton")
