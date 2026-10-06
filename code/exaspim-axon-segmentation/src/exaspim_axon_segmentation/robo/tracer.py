@@ -91,11 +91,20 @@ def contrast(c: NDArray) -> float:
     return float((core[6:10, 6:10, 6:10].max() - med) / noise)
 
 
-def cone_ahead(image: Level1Image, p: NDArray, h: NDArray, snr_min: float) -> NDArray | None:
-    """Brightest point 12-32 µm ahead of p within 30° of heading h, if the cone is bright.
+def cone_ahead(
+    image: Level1Image,
+    p: NDArray,
+    h: NDArray,
+    snr_min: float,
+    pick: tuple = (8.0, 20.0),
+    max_hop: float = 7.0,
+) -> tuple[NDArray, NDArray] | None:
+    """Brightest point ``pick`` µm ahead of p within 30° of heading h, if the cone is bright.
 
     Bright means smoothed signal at least ``snr_min`` x the robust noise (MAD of raw counts) in
-    every 8 µm band from 8 to 40 µm ahead; otherwise None.
+    every 8 µm band from 8 to 40 µm ahead, and the brightest points of successive 4 µm bands
+    (the ridge ahead) lie within ``max_hop`` µm of each other but once, i.e. form a line; otherwise
+    None. Also returns that ridge, for an identity check.
     """
     f = frame(h)
     centre = p + 24.0 * f[0]
@@ -115,9 +124,16 @@ def cone_ahead(image: Level1Image, p: NDArray, h: NDArray, snr_min: float) -> ND
         band = cone & (a >= d) & (a < d + 8)
         if (sm[band].max() - med) / noise < snr_min:
             return None
-    pick = cone & (a >= 12) & (a <= 32)
-    k = np.unravel_index(np.argmax(np.where(pick, sm, -np.inf)), sm.shape)
-    return p + a[k] * f[0] + u[k] * f[1] + w[k] * f[2]
+
+    def brightest(mask):
+        k = np.unravel_index(np.argmax(np.where(mask, sm, -np.inf)), sm.shape)
+        return p + a[k] * f[0] + u[k] * f[1] + w[k] * f[2]
+
+    target = brightest(cone & (a >= pick[0]) & (a <= pick[1]))
+    ridge = np.array([brightest(cone & (a >= d) & (a < d + 4)) for d in range(8, 33, 4)])
+    if (np.linalg.norm(np.diff(ridge, axis=0), axis=1) > max_hop).sum() > 1:
+        return None  # scattered noise maxima, not a fibre (one jump allowed: bends, beads)
+    return target, ridge
 
 
 def recentre(image: Level1Image, p: NDArray, d: NDArray, r: float = 1.0) -> NDArray:
@@ -171,6 +187,9 @@ class _State:
     dark_run: int = 0
     signal: list = field(default_factory=list)  # centre contrast (signal / noise), per step
     restarts: int = 0
+    bridge_p: list = field(default_factory=list)  # identity P of every gap the trace considered
+    last_bridge: int = -100  # step of the last bridge
+    visited: list = field(default_factory=list)  # every position stepped to (diagnostics)
     alive: bool = True
     status: str = "maxlen"
     link: int = -1
@@ -204,8 +223,10 @@ class RoboTracer:
         batch: int = 32,
         threads: int = 8,
         lost_snr: float = 3.0,
-        restart_snr: float = 5.0,
-        max_restarts: int = 2,
+        restart_snr: float = 3.0,
+        max_restarts: int = 4,
+        bridge_accept: float = 0.8,
+        bridge_every: int = 4,
     ):
         import torch
 
@@ -220,8 +241,11 @@ class RoboTracer:
         self.image, self.accept, self.max_steps = image, accept, max_steps
         self.batch, self.pool = batch, ThreadPoolExecutor(threads)
         self.lost_snr = lost_snr  # stop after 2 steps with centre contrast below this
-        # a lost / terminal stop with a clearly bright cone ahead restarts from its brightest point
+        # gap bridging: a lost / terminal stop with bright fibre in the cone ahead that the identity
+        # head calls the same cell (P >= accept) resumes from the brightest point 8-20 µm ahead
         self.restart_snr, self.max_restarts = restart_snr, max_restarts
+        self.bridge_accept = bridge_accept  # identity P needed to bridge
+        self.bridge_every = bridge_every  # steps on signal needed between two bridges
 
     # ------------------------------------------------------------------ observation and forward
     def _observe(self, st: _State, frags: Fragments, queries: list[int] | None):
@@ -335,6 +359,7 @@ class RoboTracer:
             nexts = list(self.pool.map(step, zip(act, results, strict=True)))
             for st, (_, ev, pid, centre), pn in zip(act, results, nexts, strict=True):
                 st.steps += 1
+                st.visited.append(pn.copy())
                 st.term_run = st.term_run + 1 if ev[2] > 0.8 else 0
                 st.signal.append(round(centre, 2))
                 st.dark_run = st.dark_run + 1 if centre < self.lost_snr else 0
@@ -378,10 +403,10 @@ class RoboTracer:
                 elif st.dark_run >= 2:
                     st.alive, st.status = False, "lost"
                     st.trace = st.trace[: max(1, len(st.trace) - 2)]  # drop the dark steps
-                    self._restart(st)
+                    self._restart(st, frags)
                 elif st.term_run >= 2:
                     st.alive, st.status = False, "terminal"
-                    self._restart(st)
+                    self._restart(st, frags)
         return [
             dict(
                 status=s.status,
@@ -393,19 +418,35 @@ class RoboTracer:
                 rejected=sorted(s.rejected),
                 signal=np.asarray(s.signal),
                 restarts=s.restarts,
+                bridge_p=np.asarray(s.bridge_p),
+                visited=np.asarray(s.visited).reshape(-1, 3),
             )
             for s in states
         ]
 
-    def _restart(self, st: _State) -> None:
-        """Resume a stopped trace from the brightest point ahead, if the cone ahead is bright."""
-        if st.restarts >= self.max_restarts:
+    def _identity(self, st: _State, frags: Fragments, points: NDArray) -> float:
+        """P(same cell as the trace so far) of world points, seen from the trace's position."""
+        obs = self._observe(st, frags, [])
+        obs["q"] = ((points - st.pos) @ obs["f"].T).astype(np.float32)
+        _, _, ident = self._forward([obs])
+        return float(ident[0, : len(points)].mean())
+
+    def _restart(self, st: _State, frags: Fragments) -> None:
+        """Bridge a dim gap: resume from bright fibre ahead if the identity head calls it ours."""
+        if st.restarts >= self.max_restarts or st.steps - st.last_bridge < self.bridge_every + 2:
             return
         base = st.trace[-1]
         h = unit(base - st.trace[-2]) if len(st.trace) >= 2 else st.hist[0]
-        q = cone_ahead(self.image, base, h, self.restart_snr)
-        if q is None:
+        found = cone_ahead(self.image, base, h, self.restart_snr)
+        if found is None:
             return
+        q, ridge = found
+        st.pos = base.copy()  # judge from the last bright step
+        p_same = self._identity(st, frags, ridge)
+        st.bridge_p.append(round(p_same, 3))
+        if p_same < self.bridge_accept:
+            return
+        st.last_bridge = st.steps
         q = recentre(self.image, q, unit(q - base))
         st.restarts += 1
         st.alive, st.status, st.dark_run, st.term_run = True, "maxlen", 0, 0
