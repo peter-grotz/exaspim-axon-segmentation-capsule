@@ -128,6 +128,28 @@ def predict_points(
                     overwrite=overwrite)  # fmt: skip
 
 
+def predict_box(
+    asset_uri: str,
+    lo_um: NDArray,
+    hi_um: NDArray,
+    out_uri: str,
+    config: InferenceConfig,
+    *,
+    overwrite: bool = False,
+) -> RunStats:
+    """Segment a physical (z, y, x) box, e.g. the volume spanned by a set of traced neurons.
+
+    Only the fused image is needed (no CCF annotation). Skeletonize the output block by block
+    (``skeletonize-blocks``) when it is too large for memory.
+    """
+    asset = ExaspimAsset(asset_uri)
+    lo, hi = np.asarray(lo_um, dtype=np.float64), np.asarray(hi_um, dtype=np.float64)
+    roi = RegionRoi.box(lo, hi)
+    log.info("Box %s-%s µm: %.1f mm³", lo.round(0).tolist(), hi.round(0).tolist(), roi.volume_mm3)
+    box = {"lo_um": lo.round(3).tolist(), "hi_um": hi.round(3).tolist()}
+    return _predict(asset, roi, ["box"], out_uri, config, {"box": box}, overwrite=overwrite)
+
+
 def _predict(
     asset: ExaspimAsset,
     roi: RegionRoi,
@@ -185,7 +207,11 @@ def prediction_roi(
     tiles cover only ``mask_dilation_um`` (50 µm) around the atlas region: enough for the ~41 µm
     shell of a 15% growth of MD, not for the ~58 µm of 20% (the outer voxels read as 0).
     """
-    if "points" in provenance:
+    if "box" in provenance:
+        roi = RegionRoi.box(
+            np.asarray(provenance["box"]["lo_um"]), np.asarray(provenance["box"]["hi_um"])
+        )
+    elif "points" in provenance:
         points = provenance["points"]
         roi = RegionRoi.around_points(np.asarray(points["centers_um"]), points["side_um"])
     else:

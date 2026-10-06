@@ -45,8 +45,11 @@ set -euo pipefail
 #            open end on the image with Robo-LS v2 before cubes are placed. SEED: a probability.zarr
 #            from an earlier expand run of the same asset (e.g. an attached result asset); it is
 #            copied in first so tiles it already holds are not predicted again
+#   box [ASSET] [LO] [HI] [WEIGHTS] [WORKERS]
+#            segment the box LO..HI (x,y,z um, as in SWCs) and skeletonize it block by block, with the
+#            default and the relaxed (expand) cleanup; results in /results/<subject>_box/
 MODE="predict"
-if [[ "${1:-}" =~ ^(predict|finetune|somata|expand)$ ]]; then MODE="$1"; shift; fi
+if [[ "${1:-}" =~ ^(predict|finetune|somata|expand|box)$ ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -92,6 +95,32 @@ if [[ "${MODE}" == "expand" ]]; then
         --weights "${WEIGHTS}" --budget-mm "${BUDGET_MM}" --max-rounds "${MAX_ROUNDS}" \
         --max-minutes "${MAX_MINUTES}" --batch-size 1 --device cuda "${extra[@]}" \
         2>&1 | tee "${RESULTS}/expand.log"
+    exit 0
+fi
+
+if [[ "${MODE}" == "box" ]]; then
+    ASSET="${1:?asset root required}"
+    LO="${2:?box corner x,y,z required}"
+    HI="${3:?box corner x,y,z required}"
+    WEIGHTS="${4:-/data/trailmap_finetune_v2/best.safetensors}"
+    WORKERS="${5:-6}"
+    subject="$(basename "${ASSET%/}" | cut -d_ -f2)"
+    out="${RESULTS}/${subject}_box"
+    mkdir -p "${out}"
+    echo "=== box · ${ASSET} · ${LO} .. ${HI} · ${WORKERS} workers"
+    nproc; free -g || true
+    start=$(date +%s)
+    exaspim-axon -v predict-box "${ASSET}" --lo "${LO}" --hi "${HI}" --out "${out}/probability.zarr" \
+        --weights "${WEIGHTS}" --batch-size 1 --device cuda 2>&1 | tee "${RESULTS}/box_predict.log"
+    echo "=== predict took $(( $(date +%s) - start )) s"
+    for cleanup in default relaxed; do
+        flag=(); [[ "${cleanup}" == "relaxed" ]] && flag=(--relaxed)
+        t=$(date +%s)
+        /usr/bin/time -v exaspim-axon -v skeletonize-blocks "${out}/probability.zarr" \
+            --out "${out}/skeleton_${cleanup}" --workers "${WORKERS}" --min-swc-um 100 "${flag[@]}" \
+            2>&1 | tee "${RESULTS}/box_skeleton_${cleanup}.log"
+        echo "=== skeleton (${cleanup}) took $(( $(date +%s) - t )) s"
+    done
     exit 0
 fi
 

@@ -255,6 +255,39 @@ def skeletonize_probability(
 ) -> AxonSkeleton:
     """Skeletonize a uint8 (p × 255) probability map covering ``region`` of ``grid``."""
     scale = np.asarray(grid.scale)
+    voxel, edges = thin_probability(probability, scale, config)
+    origin = np.asarray(region.start) * scale + np.asarray(grid.translation)
+    filled = np.zeros(len(voxel), dtype=bool)
+
+    # Bridge aligned tip-to-tip gaps so an axon broken where it dims is measured as one cable.
+    voxel, edges, filled = _join_pieces(
+        voxel, edges, filled, probability, scale,
+        gap_um=config.bridge_um, min_cos=config.bridge_min_cos, mutual=True, min_p=0.0,
+    )  # fmt: skip
+    voxel, edges, filled = filter_pieces(voxel, edges, filled, scale, config)
+    # Connect what is left: ends onto the continuing cable, along the probability map.
+    voxel, edges, filled = _join_pieces(
+        voxel, edges, filled, probability, scale, gap_um=config.connect_um,
+        min_cos=config.connect_min_cos, mutual=False, min_p=config.connect_min_p,
+    )  # fmt: skip
+
+    final = np.zeros(probability.shape, dtype=bool)
+    final[tuple(voxel.T)] = True
+    result = AxonSkeleton(final, voxel * scale + origin, edges, config, filled)
+    log.info(
+        "Skeleton: %d nodes, %.1f mm total length (%.1f mm gap-filled)",
+        len(voxel), result.length_um / 1e3, result.filled_length_um / 1e3,
+    )  # fmt: skip
+    return result
+
+
+def thin_probability(
+    probability: NDArray[np.uint8], scale: NDArray[np.float64], config: SkeletonConfig
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """Threshold, keep confident components, thin and prune spurs: skeleton voxels and edges.
+
+    The local first stage of :func:`skeletonize_probability` (also run block by block).
+    """
     mask = probability > round(config.threshold * 255)
     labels, n = cc3d.connected_components(mask, connectivity=26, return_N=True, out_dtype=np.uint32)
     stats = cc3d.statistics(labels)
@@ -271,6 +304,12 @@ def skeletonize_probability(
         voxels[bbox] |= skeletonize(labels[bbox] == k)
         kept += 1
     log.info("Skeletonized %d of %d components (p > %.2f)", kept, n, config.threshold)
+    if voxels.any():  # isolated single voxels have no length, and skan cannot graph them alone
+        pts = np.argwhere(voxels)
+        alone = np.array([len(x) == 1 for x in cKDTree(pts).query_ball_point(pts, 1.8)])
+        voxels[tuple(pts[alone].T)] = False
+    if not voxels.any():
+        return np.zeros((0, 3), dtype=np.int64), np.zeros((0, 2), dtype=np.int64)
 
     skeleton = Skeleton(voxels, spacing=scale)
     for _ in range(config.prune_rounds):
@@ -281,38 +320,26 @@ def skeletonize_probability(
         if spurs.size == 0:
             break
         skeleton = skeleton.prune_paths(spurs)
-    origin = np.asarray(region.start) * scale + np.asarray(grid.translation)
     voxel = np.round(skeleton.coordinates).astype(np.int64)
     graph = skeleton.graph.tocoo()
     upper = graph.row < graph.col
-    edges = np.stack([graph.row[upper], graph.col[upper]], axis=1).astype(np.int64)
-    filled = np.zeros(len(voxel), dtype=bool)
+    return voxel, np.stack([graph.row[upper], graph.col[upper]], axis=1).astype(np.int64)
 
-    # Bridge aligned tip-to-tip gaps so an axon broken where it dims is measured as one cable.
-    voxel, edges, filled = _join_pieces(
-        voxel, edges, filled, probability, scale,
-        gap_um=config.bridge_um, min_cos=config.bridge_min_cos, mutual=True, min_p=0.0,
-    )  # fmt: skip
+
+def filter_pieces(
+    voxel: NDArray[np.int64],
+    edges: NDArray[np.int64],
+    filled: NDArray[np.bool_],
+    scale: NDArray[np.float64],
+    config: SkeletonConfig,
+) -> tuple[NDArray[np.int64], NDArray[np.int64], NDArray[np.bool_]]:
+    """Drop short pieces, single-plane speckle and isolated pieces (the whole-graph stage)."""
     _, edges, keep = _drop_small_pieces(
         voxel * scale, edges, config.min_piece_um, config.speckle_max_um, float(scale[0])
     )
     voxel, filled = voxel[keep], filled[keep]
     _, edges, keep = _drop_isolated_pieces(voxel * scale, edges, config.anchor_um, config.attach_um)
-    voxel, filled = voxel[keep], filled[keep]
-    # Connect what is left: ends onto the continuing cable, along the probability map.
-    voxel, edges, filled = _join_pieces(
-        voxel, edges, filled, probability, scale, gap_um=config.connect_um,
-        min_cos=config.connect_min_cos, mutual=False, min_p=config.connect_min_p,
-    )  # fmt: skip
-
-    final = np.zeros(mask.shape, dtype=bool)
-    final[tuple(voxel.T)] = True
-    result = AxonSkeleton(final, voxel * scale + origin, edges, config, filled)
-    log.info(
-        "Skeleton: %d nodes, %.1f mm total length (%.1f mm gap-filled)",
-        len(voxel), result.length_um / 1e3, result.filled_length_um / 1e3,
-    )  # fmt: skip
-    return result
+    return voxel[keep], edges, filled[keep]
 
 
 def _adjacency(edges: NDArray[np.int64], n: int):
@@ -397,6 +424,10 @@ def _join_pieces(
     min_cos: float,
     mutual: bool,
     min_p: float,
+    piece: NDArray[np.int64] | None = None,
+    root: NDArray[np.int64] | None = None,
+    tip_mask: NDArray[np.bool_] | None = None,
+    degree: NDArray[np.int64] | None = None,
 ) -> tuple[NDArray[np.int64], NDArray[np.int64], NDArray[np.bool_]]:
     """Join piece tips to nearby pieces along the brightest path through the probability map.
 
@@ -406,15 +437,21 @@ def _join_pieces(
     into its own (possibly already joined) piece, so no cycles form. The join follows the
     minimal-cost path through ``1 / (p + 0.05)``; it is rejected if it detours (longer than
     1.3 × the gap plus one voxel) or passes a voxel below ``min_p``. Path voxels become new nodes.
+
+    For a block of a larger skeleton, ``piece`` (global piece labels), ``root`` (a union-find
+    over them, updated in place), ``degree`` (global node degrees) and ``tip_mask`` (the tips
+    this block may join) keep the joins consistent across blocks.
     """
     n = len(voxel)
     if gap_um <= 0 or n == 0:
         return voxel, edges, filled
     um = voxel * scale
     graph = _adjacency(edges, n)
-    _, piece = connected_components(graph, directed=False)
-    degree = np.asarray(graph.sum(axis=1)).ravel()
-    tips = np.flatnonzero(degree == 1)
+    if piece is None:
+        _, piece = connected_components(graph, directed=False)
+    if degree is None:
+        degree = np.asarray(graph.sum(axis=1)).ravel()
+    tips = np.flatnonzero((degree == 1) & (True if tip_mask is None else tip_mask))
     if len(tips) == 0:
         return voxel, edges, filled
     direction = np.zeros((n, 3))
@@ -439,7 +476,8 @@ def _join_pieces(
     first[1:] = (a[1:] != a[:-1]) | (piece[b[1:]] != piece[b[:-1]])
     a, b, distance = a[first], b[first], distance[first]
 
-    root = np.arange(piece.max() + 1)
+    if root is None:
+        root = np.arange(piece.max() + 1)
 
     def find(x: int) -> int:
         while root[x] != x:

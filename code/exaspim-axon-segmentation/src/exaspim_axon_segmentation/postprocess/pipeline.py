@@ -165,6 +165,84 @@ def skeletonize_prediction(
     return summary
 
 
+class _RegionMask:
+    """Picklable ``mask_fn`` for block-wise skeletonization: the (grown) region on a block."""
+
+    def __init__(self, roi, grid, region_start):
+        self.roi, self.grid, self.start = roi, grid, np.asarray(region_start)
+
+    def __call__(self, lo, hi):
+        return self.roi.sample_on(self.grid, Box.from_arrays(self.start + lo, self.start + hi))
+
+
+def skeletonize_prediction_blockwise(
+    prediction_uri: str,
+    out_dir: Path,
+    config: SkeletonConfig,
+    block=None,
+    *,
+    swc_prefix: str | None = None,
+    region_growth: float | None = None,
+    dendrites: DendriteConfig | None = None,
+    mask_region: bool = True,
+    min_swc_um: float = 0.0,
+) -> dict:
+    """Skeletonize a probability output block by block (for volumes too large for memory).
+
+    Same outputs as :func:`skeletonize_prediction` except ``skeleton.zarr``; per-piece SWCs are
+    written for pieces of at least ``min_swc_um``. See :mod:`.blockwise` for the method.
+    """
+    from exaspim_axon_segmentation.postprocess.blockwise import BlockConfig, skeletonize_blockwise
+
+    block = block or BlockConfig()
+    dendrites = dendrites or DendriteConfig()
+    group = zarr.open_group(prediction_uri, mode="r")
+    provenance = dict(group.attrs[PROVENANCE_ATTR])
+    asset = ExaspimAsset.from_provenance(provenance)
+    grid = asset.fused.transforms[provenance["level"]]
+    box = provenance["region_box"]
+    region = Box.from_arrays(box["start"], box["stop"])
+    mask_fn = None
+    if mask_region:
+        mask_fn = _RegionMask(prediction_roi(asset, provenance, growth=region_growth), grid,
+                              region.start)  # fmt: skip
+    skeleton = skeletonize_blockwise(prediction_uri, grid, region, config, block, mask_fn=mask_fn)
+    summary = {
+        "prediction": prediction_uri, "config": asdict(config), "block": asdict(block),
+        "box": {"start": list(region.start), "stop": list(region.stop)},
+        "nodes": len(skeleton.coordinates_um), "length_um": skeleton.length_um,
+        "gap_filled_length_um": skeleton.filled_length_um, "blockwise": True,
+    }  # fmt: skip
+    out_dir.mkdir(parents=True, exist_ok=True)
+    prefix = swc_prefix or f"{asset.subject_id}_{'+'.join(provenance['regions'])}"
+    somata = _somata_um(asset)
+    if somata is not None and len(skeleton.coordinates_um):
+        near = cKDTree(skeleton.coordinates_um).query(somata)[0] <= dendrites.field_um
+        somata = somata[near]
+    if somata is not None and len(skeleton.coordinates_um):
+        dendrite = label_dendrites(skeleton.coordinates_um, skeleton.edges, somata, dendrites)
+        skeleton = replace(skeleton, node_types=np.where(dendrite, SWC_DENDRITE, SWC_AXON))
+        axon = skeleton.subset(~dendrite)
+        summary["dendrites"] = asdict(dendrites) | {
+            "somata": len(somata),
+            "dendrite_um": skeleton.length_um - axon.length_um - _cut_um(skeleton, dendrite),
+            "axon_candidate_um": axon.length_um,
+        }
+        axon.write_swc(out_dir / "axon_candidates.swc")
+    skeleton.write_swc(out_dir / "skeleton.swc")
+    if min_swc_um > 0 and len(skeleton.coordinates_um):
+        keep = np.zeros(len(skeleton.coordinates_um), dtype=bool)
+        for nodes, length in skeleton.pieces():
+            if length >= min_swc_um:
+                keep[nodes] = True
+        skeleton = skeleton.subset(keep)
+    summary["pieces"] = skeleton.write_pieces(out_dir / "swc", prefix)
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    log.info("Blockwise skeleton: %.1f mm in %d SWC pieces -> %s", summary["length_um"] / 1e3,
+             len(summary["pieces"]), out_dir)  # fmt: skip
+    return summary
+
+
 def skeletonize_around(
     prediction_uri: str,
     center_um: NDArray,

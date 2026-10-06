@@ -105,6 +105,14 @@ class RegionRoi:
         start = lo + np.asarray(tight.start)
         return cls(frozenset(), mask[tight.slices], Box.from_arrays(start, start + tight.shape), tf)
 
+    @classmethod
+    def box(cls, lo_um: NDArray, hi_um: NDArray, *, spacing_um: float = 50.0) -> RegionRoi:
+        """Return a physical (z, y, x) box as one region, on a synthetic ``spacing_um`` grid."""
+        tf = LevelTransform((spacing_um,) * 3, (0.0, 0.0, 0.0))
+        lo = np.ceil(np.asarray(lo_um, dtype=np.float64) / spacing_um).astype(int)
+        hi = np.ceil(np.asarray(hi_um, dtype=np.float64) / spacing_um).astype(int)
+        return cls(frozenset(), np.ones(hi - lo, dtype=bool), Box.from_arrays(lo, hi), tf)
+
     def grown(self, fraction: float) -> RegionRoi:
         """Return the region dilated uniformly (µm) until its volume is ``1 + fraction`` times.
 
