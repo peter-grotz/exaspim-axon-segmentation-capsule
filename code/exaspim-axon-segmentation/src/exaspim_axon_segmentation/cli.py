@@ -376,6 +376,43 @@ def predict_box_cmd(
     predict_box(asset, np.minimum(a, b), np.maximum(a, b), str(out), config, scaling=fixed)
 
 
+@app.command("snr-blocks")
+def snr_blocks_cmd(
+    url: Annotated[
+        str, typer.Argument(help="OME-Zarr tile (s3:// or https://), e.g. a raw SPIM tile")
+    ],
+    out: Annotated[Path, typer.Option(help="Output directory")],
+    weights: Annotated[str, typer.Option(help="Fine-tuned .safetensors or registered name")],
+    n_blocks: Annotated[
+        int, typer.Option(help="Random tissue blocks (ignored with --centres)")
+    ] = 20,
+    centres: Annotated[
+        Path | None, typer.Option(help="snr_blocks.json of an earlier run: score the same places")
+    ] = None,
+    level: Annotated[int, typer.Option(help="Pyramid level to segment")] = 0,
+    block_um: Annotated[str, typer.Option(help="Block size z,y,x (um)")] = "1280,1440,1440",
+    resample_um: Annotated[
+        str, typer.Option(help="Also run resampled to this grid z,y,x (um); 'none' = native only")
+    ] = "4,2.992,2.992",
+    seed: Annotated[int, typer.Option()] = 0,
+    device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
+) -> None:
+    """Axon SNR in random tissue blocks of an OME-Zarr tile, with TRAILMAP as the detector."""
+    import json as _json
+
+    import numpy as np
+
+    from exaspim_axon_segmentation.snr import SnrConfig, random_centres, snr_blocks
+
+    if centres is not None:
+        pts = np.array([b["centre_um"] for b in _json.loads(centres.read_text())["blocks"]])
+    else:
+        pts = random_centres(url, n_blocks, seed)
+    rs = None if resample_um == "none" else tuple(float(v) for v in resample_um.split(","))
+    cfg = SnrConfig(block_um=tuple(float(v) for v in block_um.split(",")), resample_um=rs)
+    snr_blocks(url, pts, out, weights, cfg, level=level, device=device)
+
+
 @app.command("skeletonize-blocks")
 def skeletonize_blocks(
     prediction: Annotated[str, typer.Argument(help="Probability OME-Zarr from `predict`")],
