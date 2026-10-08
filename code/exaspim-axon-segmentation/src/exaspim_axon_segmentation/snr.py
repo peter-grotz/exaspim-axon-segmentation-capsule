@@ -4,12 +4,15 @@ For comparing acquisitions of one brain (e.g. 1x and 5x) at the same places: blo
 random inside the tissue (or read from a saved list of physical centres), segmented with the
 network, natively and/or resampled to a target voxel grid, and scored per block:
 
-* signal: median raw intensity of the detected axon voxels (p >= ``axon_p``),
-* background: median raw intensity of the tissue around them (detections dilated by
-  ``guard_vox`` voxels are excluded; the darkest ``outside_pct`` percent are taken as outside
-  the tissue and excluded too),
-* noise: robust SD (1.4826 x MAD) of that background,
+* signal: mean raw intensity of the detected axon voxels (p >= ``axon_p``),
+* background: mean raw intensity of the tissue around them, sigma-clipped at 3 SD (detections
+  dilated by ``guard_vox`` voxels are excluded; the darkest ``outside_pct`` percent are taken as
+  outside the tissue and excluded too),
+* noise: SD of that clipped background,
 * SNR = (signal - background) / noise.
+
+Means and a clipped SD, not medians and MADs: raw cameras quantize (e.g. 12-bit values stored in
+steps of 16), and medians of quantized values only take a few steps. Medians are kept as well.
 
 Block centres are recorded in physical µm (the OME-Zarr scale and translation of level 0), so a
 second acquisition can be scored at the same locations.
@@ -106,10 +109,16 @@ def score(raw: NDArray[np.float32], prob: NDArray[np.float32], config: SnrConfig
     out = {"axon_voxels": int(axon.sum()), "axon_fraction": float(axon.mean())}
     if axon.sum() < 50 or bg.sum() < 1000:
         return out | {"signal": None, "background": None, "noise_sd": None, "snr": None}
-    s = float(np.median(raw[axon]))
-    b = float(np.median(raw[bg]))
-    sd = float(1.4826 * np.median(np.abs(raw[bg] - b)))
-    return out | {"signal": s, "background": b, "noise_sd": sd, "snr": (s - b) / max(sd, 1e-6)}
+    values = raw[bg].astype(np.float64)
+    for _ in range(5):  # sigma-clip the background
+        m, sd = values.mean(), values.std()
+        values = values[np.abs(values - m) <= 3 * sd]
+    s, b, sd = float(raw[axon].mean()), float(values.mean()), float(values.std())
+    sm, bm = float(np.median(raw[axon])), float(np.median(raw[bg]))
+    sdm = float(1.4826 * np.median(np.abs(raw[bg] - bm)))
+    step = int(np.gcd.reduce(np.unique(raw[::4, ::4, ::4].astype(np.int64))[:5000]))
+    return out | {"signal": s, "background": b, "noise_sd": sd, "snr": (s - b) / max(sd, 1e-6),
+                  "median_snr": (sm - bm) / max(sdm, 1e-6), "quantization_step": step}  # fmt: skip
 
 
 def snr_blocks(
@@ -159,9 +168,15 @@ def snr_blocks(
             if min(vol.shape) < 64:
                 row[name] = {"skipped": f"block {vol.shape} smaller than the network input"}
                 continue
-            scaling = estimate_scaling_array(
-                vol, vol > np.percentile(vol, config.outside_pct), norm
-            )
+            try:
+                inside = vol > np.percentile(vol, config.outside_pct)
+                scaling = estimate_scaling_array(vol, inside, norm)
+            except ValueError as error:  # no foreground found: percentile scaling instead
+                from exaspim_axon_segmentation.inference.normalize import IntensityScaling
+
+                lo_v, hi_v = np.percentile(vol, [50, 99.9])
+                scaling = IntensityScaling(float(lo_v), float(max(hi_v - lo_v, 1.0)))
+                log.warning("block %d %s: %s; percentile scaling", k, name, error)
             prob = _predict(predictor, scaling(vol), config.tile)
             extra = {
                 "voxel_um": np.asarray(vox).tolist(),
