@@ -177,6 +177,25 @@ class AxonSkeleton:
         members = np.split(np.argsort(part, kind="stable"), np.cumsum(np.bincount(part))[:-1])
         return [(members[p], float(length[p])) for p in np.argsort(-length, kind="stable")]
 
+    def _forest(self) -> tuple[NDArray[np.int64], NDArray[np.int64], NDArray[np.int64]]:
+        """Breadth-first order and parents of all nodes, one root (an end point) per piece.
+
+        One traversal from a virtual root joined to every piece's root, so it scales to tens of
+        millions of nodes (no per-piece pass over all nodes). Returns order, parent (-1 at
+        roots) and piece label per node.
+        """
+        n = len(self.coordinates_um)
+        graph = _adjacency(self.edges, n)
+        _, part = connected_components(graph, directed=False)
+        degree = np.asarray(graph.sum(axis=1)).ravel()
+        o = np.lexsort((np.arange(n), degree, part))
+        roots = o[np.r_[True, part[o][1:] != part[o][:-1]]]
+        joined = np.concatenate([self.edges, np.stack([np.full(len(roots), n), roots], axis=1)])
+        order, predecessors = breadth_first_order(_adjacency(joined, n + 1), n, directed=False)
+        parent = predecessors[:n].astype(np.int64)
+        parent[roots] = -1
+        return order[1:].astype(np.int64), parent, part
+
     def to_swc(self, nodes: NDArray[np.int64] | None = None) -> Swc:
         """SWC forest of the given nodes (default: all), one root per connected piece.
 
@@ -184,34 +203,21 @@ class AxonSkeleton:
         its children and ids run 1..n. Node type is ``node_types`` (0, undefined, if unset) and
         radius 1.0, as Horta writes them.
         """
-        nodes = np.arange(len(self.coordinates_um)) if nodes is None else np.asarray(nodes)
-        local = np.full(len(self.coordinates_um), -1, dtype=np.int64)
-        local[nodes] = np.arange(len(nodes))
-        keep = (local[self.edges] >= 0).all(axis=1)
-        edges = local[self.edges[keep]]
-        graph = _adjacency(edges, len(nodes))
-        n_parts, part = connected_components(graph, directed=False)
-        parent = np.full(len(nodes), -1, dtype=np.int64)
-        order = []
-        degree = np.asarray(graph.sum(axis=1)).ravel()
-        for p in range(n_parts):
-            members = np.flatnonzero(part == p)
-            root = members[np.argmin(degree[members])]  # an end point where there is one
-            visit, predecessors = breadth_first_order(graph, root, directed=False)
-            order.extend(visit.tolist())
-            parent[visit] = predecessors[visit]
-        order = np.asarray(order, dtype=np.int64)
-        ids = np.empty(len(nodes), dtype=np.int64)
-        ids[order] = np.arange(1, len(nodes) + 1)
+        if nodes is not None:
+            keep = np.zeros(len(self.coordinates_um), dtype=bool)
+            keep[np.asarray(nodes)] = True
+            return self.subset(keep).to_swc()
+        n = len(self.coordinates_um)
+        order, parent, _ = self._forest()
+        ids = np.empty(n, dtype=np.int64)
+        ids[order] = np.arange(1, n + 1)
         parents = np.where(parent[order] >= 0, ids[np.maximum(parent[order], 0)], -1)
-        types = np.zeros(len(nodes), dtype=np.int64)
-        if self.node_types is not None:
-            types = self.node_types[nodes[order]]
+        types = np.zeros(n, dtype=np.int64) if self.node_types is None else self.node_types[order]
         return Swc(
-            ids=ids[order],
+            ids=np.arange(1, n + 1),
             types=types,
-            xyz_um=self.coordinates_um[nodes[order]][:, ::-1],
-            radius=np.ones(len(nodes)),
+            xyz_um=self.coordinates_um[order][:, ::-1],
+            radius=np.ones(n),
             parents=parents,
             header=(f"# ORIGINAL_SOURCE exaspim-axon-segmentation {__version__}",),
         )
@@ -231,15 +237,38 @@ class AxonSkeleton:
         frame of ``fused.zarr``. Returns one record (file, nodes, length) per piece.
         """
         directory.mkdir(parents=True, exist_ok=True)
+        n = len(self.coordinates_um)
+        if n == 0:
+            return []
+        order, parent, part = self._forest()
+        n_parts = part.max() + 1
+        length = np.bincount(
+            part[self.edges[:, 0]], weights=self.edge_lengths_um, minlength=n_parts
+        )
+        by_length = np.argsort(-length, kind="stable")
+        rank = np.empty(n_parts, dtype=np.int64)
+        rank[by_length] = np.arange(n_parts)
+        position = np.empty(n, dtype=np.int64)
+        position[order] = np.arange(n)
+        nodes = np.lexsort((position, rank[part]))  # pieces longest first, each breadth-first
+        bounds = np.r_[0, np.cumsum(np.bincount(rank[part], minlength=n_parts))]
+        local = np.empty(n, dtype=np.int64)
+        local[nodes] = np.arange(n) - bounds[rank[part[nodes]]] + 1  # 1-based id within its piece
+        types = np.zeros(n, dtype=np.int64) if self.node_types is None else self.node_types
         records = []
-        for k, (nodes, length) in enumerate(self.pieces(), start=1):
-            name = f"{prefix}_{k:04d}.swc"
-            write_swc(
-                self.to_swc(nodes),
-                directory / name,
-                color=PIECE_COLORS[(k - 1) % len(PIECE_COLORS)],
+        for k in range(n_parts):
+            seg = nodes[bounds[k] : bounds[k + 1]]
+            par = parent[seg]
+            swc = Swc(
+                ids=local[seg], types=types[seg], xyz_um=self.coordinates_um[seg][:, ::-1],
+                radius=np.ones(len(seg)), parents=np.where(par >= 0, local[np.maximum(par, 0)], -1),
+                header=(f"# ORIGINAL_SOURCE exaspim-axon-segmentation {__version__}",),
+            )  # fmt: skip
+            name = f"{prefix}_{k + 1:04d}.swc"
+            write_swc(swc, directory / name, color=PIECE_COLORS[k % len(PIECE_COLORS)])
+            records.append(
+                {"file": name, "nodes": len(seg), "length_um": float(length[by_length[k]])}
             )
-            records.append({"file": name, "nodes": len(nodes), "length_um": length})
         return records
 
 

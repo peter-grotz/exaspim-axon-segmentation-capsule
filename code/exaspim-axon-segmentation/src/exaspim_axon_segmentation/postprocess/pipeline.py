@@ -292,9 +292,10 @@ def skeletonize_slabs(
             dendrite = label_dendrites(skeleton.coordinates_um, skeleton.edges, somata, dendrites)
             skeleton = replace(skeleton, node_types=np.where(dendrite, SWC_DENDRITE, SWC_AXON))
             summary["dendrites"] = {"somata": len(somata)}
-    skeleton.write_swc(out_dir / "skeleton.swc")
     np.savez_compressed(out_dir / "graph.npz", coords=skeleton.coordinates_um,
                         edges=skeleton.edges, filled=skeleton.filled)  # fmt: skip
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))  # before the slow writes
+    skeleton.write_swc(out_dir / "skeleton.swc")
     if len(skeleton.coordinates_um):
         keep = np.zeros(len(skeleton.coordinates_um), dtype=bool)
         for nodes, length in skeleton.pieces():
