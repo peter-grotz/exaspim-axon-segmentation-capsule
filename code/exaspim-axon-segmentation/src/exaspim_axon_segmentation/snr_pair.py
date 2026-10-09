@@ -12,7 +12,9 @@ resolution one) mapped onto *a*'s grid:
 
 * ``a_snr_on_b_mask``: SNR of *a* measured on the axons detected in *b*,
 * ``recall_a`` / ``precision_a``: agreement of *a*'s detection with *b*'s, within ``tol_vox`` of
-  *a*'s voxels.
+  *a*'s voxels,
+* ``a_matched`` / ``b_matched``: signal, background, noise and SNR of both acquisitions at the same
+  voxel size (*b* averaged over each of *a*'s voxels) on the same mask (*b*'s axons).
 """
 
 from __future__ import annotations
@@ -25,7 +27,14 @@ from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.ndimage import affine_transform, binary_dilation, gaussian_filter, maximum_filter, zoom
+from scipy.ndimage import (
+    affine_transform,
+    binary_dilation,
+    gaussian_filter,
+    maximum_filter,
+    uniform_filter,
+    zoom,
+)
 
 from exaspim_axon_segmentation.snr import SnrConfig, _predict, _read, open_ome, score
 
@@ -277,11 +286,24 @@ def snr_pair(
             np.savez_compressed(out_dir / f"block{k:03d}_{name}_on_a.npz", mip=b_on_a.max(0))
             tol = binary_dilation(b_on_a, iterations=config.tol_vox) if b_on_a.any() else b_on_a
             tol_a = binary_dilation(det_a, iterations=config.tol_vox) if det_a.any() else det_a
+            mask = b_on_a.astype(np.float32)
+            # b at a's voxel size: mean over each a voxel's footprint, sampled on a's grid, so
+            # both acquisitions are scored with the same voxels and the same axon mask
+            mean_b = uniform_filter(raw.astype(np.float32), size=tuple(size))
+            b_at_a = _to_a(mean_b, ob, vox, lin_map, shift, oa, la[2], raw_a.shape)
+            inside = _to_a(np.ones(raw.shape, np.float32), ob, vox, lin_map, shift, oa, la[2],
+                           raw_a.shape, order=0)  # fmt: skip
+            keys = ("signal", "background", "noise_sd", "snr")
+            sa, sb = score(raw_a, mask, sc), score(b_at_a, mask, sc)
             row["cross" if name == "b" else f"cross_{name}"] = {
                 "b_axon_fraction_on_a": float(b_on_a.mean()),
-                "a_snr_on_b_mask": score(raw_a, b_on_a.astype(np.float32), sc).get("snr"),
+                "a_snr_on_b_mask": sa.get("snr"),
                 "recall_a": float((b_on_a & tol_a).sum() / max(b_on_a.sum(), 1)),
                 "precision_a": float((det_a & tol).sum() / max(det_a.sum(), 1)),
+                "matched_voxel_um": la[2].tolist(),
+                "inside_fraction": float((inside > 0).mean()),
+                "a_matched": {key: sa.get(key) for key in keys},
+                "b_matched": {key: sb.get(key) for key in keys},
             }
         on_a = row.pop("_on_a", {})
         if "b" in on_a and "b_fused" in on_a:
