@@ -49,10 +49,11 @@ set -euo pipefail
 #            segment the box LO..HI (x,y,z um, as in SWCs) and (SKELETONIZE=yes, default) skeletonize
 #            it block by block with the default and relaxed cleanup; SCALING=offset,scale fixes the
 #            intensity normalization (slabs of one volume); results in /results/<subject>_box/
-#   snr [URL] [N] [BLOCK_UM] [RESAMPLE] [LEVEL] [WEIGHTS] [CENTRES]
+#   snr [URL] [N] [BLOCK_UM] [RESAMPLE] [LEVEL] [WEIGHTS] [CENTRES] [SEED]
 #            axon SNR in N random tissue blocks of an OME-Zarr tile (TRAILMAP as the detector), native
 #            and resampled to RESAMPLE (z,y,x um; 'none' = native only); CENTRES = a snr_blocks.json
-#            in code/snr/ to score the same places (e.g. the 5x of a 1x run); results in /results/snr/
+#            in code/snr/ to score the same places (e.g. the 5x of a 1x run); SEED picks the random
+#            blocks when no CENTRES are given; results in /results/snr/
 #   slabs [WORKERS] [RELAXED]
 #            skeletonize every attached */probability.zarr (slabs from box runs, as data assets) as
 #            one volume, block by block; results in /results/slabs_skeleton/
@@ -144,7 +145,8 @@ if [[ "${MODE}" == "snr" ]]; then
     LEVEL="${5:-0}"
     WEIGHTS="${6:-/data/trailmap_finetune_v2/best.safetensors}"
     CENTRES="${7:-}"
-    extra=(); [[ -n "${CENTRES}" ]] && extra=(--centres "${CODE_DIR}/snr/${CENTRES}")
+    SEED="${8:-0}"
+    extra=(--seed "${SEED}"); [[ -n "${CENTRES}" ]] && extra+=(--centres "${CODE_DIR}/snr/${CENTRES}")
     echo "=== snr · ${URL} · ${N} blocks of ${BLOCK_UM} um · level ${LEVEL} · resample ${RESAMPLE}"
     exaspim-axon -v snr-blocks "${URL}" --out "${RESULTS}/snr" --weights "${WEIGHTS}" --n-blocks "${N}" \
         --block-um "${BLOCK_UM}" --resample-um "${RESAMPLE}" --level "${LEVEL}" --device cuda \

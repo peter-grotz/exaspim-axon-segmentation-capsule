@@ -192,12 +192,10 @@ def snr_blocks(
             try:
                 inside = vol > np.percentile(vol, config.outside_pct)
                 scaling = estimate_scaling_array(vol, inside, norm)
-            except ValueError as error:  # no foreground found: percentile scaling instead
-                from exaspim_axon_segmentation.inference.normalize import IntensityScaling
-
-                lo_v, hi_v = np.percentile(vol, [50, 99.9])
-                scaling = IntensityScaling(float(lo_v), float(max(hi_v - lo_v, 1.0)))
-                log.warning("block %d %s: %s; percentile scaling", k, name, error)
+            except ValueError as error:  # no foreground: nothing to scale by, so nothing to detect
+                row[name] = {"skipped": f"no foreground: {error}", "verdict": "no_signal"}
+                log.warning("block %d %s: %s; skipped", k, name, error)
+                continue
             prob = _predict(predictor, scaling(vol), config.tile)
             extra = {
                 "voxel_um": np.asarray(vox).tolist(),
