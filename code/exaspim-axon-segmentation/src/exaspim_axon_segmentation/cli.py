@@ -393,7 +393,7 @@ def snr_blocks_cmd(
     block_um: Annotated[str, typer.Option(help="Block size z,y,x (um)")] = "1280,1440,1440",
     resample_um: Annotated[
         str, typer.Option(help="Also run resampled to this grid z,y,x (um); 'none' = native only")
-    ] = "4,2.992,2.992",
+    ] = "none",
     seed: Annotated[int, typer.Option()] = 0,
     device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
 ) -> None:

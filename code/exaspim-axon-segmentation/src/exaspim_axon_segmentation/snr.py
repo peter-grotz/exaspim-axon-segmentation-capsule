@@ -39,11 +39,14 @@ class SnrConfig:
     """Settings of :func:`snr_blocks`."""
 
     block_um: tuple[float, float, float] = (1280.0, 1440.0, 1440.0)  # z, y, x
-    resample_um: tuple[float, float, float] | None = (4.0, 2.992, 2.992)  # training grid
+    resample_um: tuple[float, float, float] | None = (
+        None  # e.g. the training grid (4, 2.992, 2.992)
+    )
     axon_p: float = 0.5
     guard_vox: int = 2
     outside_pct: float = 10.0
     tile: int = 160
+    qc: bool = True  # false-detection checks per block (qc/detection_qc.py)
 
 
 def _store(url: str):
@@ -150,13 +153,31 @@ def snr_blocks(
     dev = resolve_device(device)
     precision = resolve_precision("auto") if dev.type == "cuda" else torch.float32
     predictor = TilePredictor(load_model(weights), dev, precision)
+    from exaspim_axon_segmentation.inference.normalize import scaling_from_samples
+    from exaspim_axon_segmentation.qc.detection_qc import DetectionQcConfig, block_qc
+
     half = np.asarray(config.block_um) / 2
+    boxes, raws = [], []
+    for centre in np.atleast_2d(centres_um):
+        lo = np.clip(np.floor((centre - half - translation) / scale).astype(int), 0, shape)
+        hi = np.clip(np.ceil((centre + half - translation) / scale).astype(int), 0, shape)
+        boxes.append((lo, hi))
+        raws.append(_read(array, lead, lo, hi))
+    # one acquisition-wide normalization, from samples pooled over all blocks
+    rng = np.random.default_rng(0)
+    pooled = np.concatenate(
+        [r.ravel()[rng.choice(r.size, min(r.size, 200_000), replace=False)] for r in raws]
+    )
+    try:
+        shared = scaling_from_samples(pooled, norm)
+    except ValueError:
+        shared = None
+    log.info("shared scaling: %s", None if shared is None else (shared.offset, shared.scale))
+    qc_cfg = DetectionQcConfig()
     rows = []
     for k, centre in enumerate(np.atleast_2d(centres_um)):
         t0 = time.time()
-        lo = np.clip(np.floor((centre - half - translation) / scale).astype(int), 0, shape)
-        hi = np.clip(np.ceil((centre + half - translation) / scale).astype(int), 0, shape)
-        raw = _read(array, lead, lo, hi)
+        (lo, hi), raw = boxes[k], raws[k]
         row = {"block": k, "centre_um": np.round(centre, 1).tolist(), "lo_vox": lo.tolist(),
                "shape": list(raw.shape), "voxel_um": scale.tolist()}  # fmt: skip
         variants = {"native": (raw, scale)}
@@ -183,6 +204,15 @@ def snr_blocks(
                 "scaling": [scaling.offset, scaling.scale],
             }
             row[name] = score(vol, prob, config) | extra
+            if config.qc and name == "native":
+                row[name]["qc"] = block_qc(
+                    vol,
+                    lambda v: _predict(predictor, v, config.tile),
+                    scaling,
+                    shared_scaling=shared,
+                    prob=prob,
+                    config=qc_cfg,
+                )
             np.savez_compressed(out_dir / f"block{k:03d}_{name}.npz", raw_mip=vol.max(0),
                                 prob_mip=np.round(prob.max(0) * 255).astype(np.uint8))  # fmt: skip
         row["seconds"] = round(time.time() - t0, 1)
