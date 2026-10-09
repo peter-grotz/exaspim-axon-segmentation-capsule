@@ -54,11 +54,15 @@ set -euo pipefail
 #            and resampled to RESAMPLE (z,y,x um; 'none' = native only); CENTRES = a snr_blocks.json
 #            in code/snr/ to score the same places (e.g. the 5x of a 1x run); SEED picks the random
 #            blocks when no CENTRES are given; results in /results/snr/
+#   snrpair [URL_A] [URL_B] [AFFINE] [N] [SEED] [WEIGHTS] [RAW_ROOT] [STITCHING]
+#            axon SNR at the same places in two acquisitions (a = 1x tile, b = 5x fused); AFFINE = a
+#            json in code/snr/ with p_b = A p_a + t; RAW_ROOT + STITCHING (xml in code/snr/) read b
+#            from its raw tiles as well ('none' = fused only); results in /results/snr_pair/
 #   slabs [WORKERS] [RELAXED]
 #            skeletonize every attached */probability.zarr (slabs from box runs, as data assets) as
 #            one volume, block by block; results in /results/slabs_skeleton/
 MODE="predict"
-if [[ "${1:-}" =~ ^(predict|finetune|somata|expand|box|slabs|snr)$ ]]; then MODE="$1"; shift; fi
+if [[ "${1:-}" =~ ^(predict|finetune|somata|expand|box|slabs|snr|snrpair)$ ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -134,6 +138,23 @@ if [[ "${MODE}" == "box" ]]; then
             2>&1 | tee "${RESULTS}/box_skeleton_${cleanup}.log"
         echo "=== skeleton (${cleanup}) took $(( $(date +%s) - t )) s"
     done
+    exit 0
+fi
+
+if [[ "${MODE}" == "snrpair" ]]; then
+    URL_A="${1:?acquisition a URL required}"
+    URL_B="${2:?acquisition b URL required}"
+    AFFINE="${3:-791116_0609_1x_to_5x.json}"
+    N="${4:-20}"
+    SEED="${5:-0}"
+    WEIGHTS="${6:-/data/trailmap_finetune_v2/best.safetensors}"
+    RAW_ROOT="${7:-none}"
+    STITCHING="${8:-791116_5x_bigstitcher_affine.xml}"
+    raw=(); [[ "${RAW_ROOT}" != "none" ]] && raw=(--raw-tiles "${RAW_ROOT}" --stitching "${CODE_DIR}/snr/${STITCHING}")
+    echo "=== snrpair · ${URL_A} -> ${URL_B} · ${N} blocks · seed ${SEED}"
+    exaspim-axon -v snr-pair "${URL_A}" "${URL_B}" --affine "${CODE_DIR}/snr/${AFFINE}" --out "${RESULTS}/snr_pair" \
+        --weights "${WEIGHTS}" --n-blocks "${N}" --seed "${SEED}" --device cuda \
+        "${raw[@]}" 2>&1 | tee "${RESULTS}/snr_pair.log"
     exit 0
 fi
 

@@ -55,10 +55,15 @@ def _store(url: str):
     return zarr.storage.FsspecStore.from_url(url, read_only=True, storage_options=options)
 
 
+def _multiscales(root) -> list:
+    attrs = root.attrs
+    return attrs["multiscales"] if "multiscales" in attrs else attrs["ome"]["multiscales"]  # 0.4/0.5
+
+
 def open_ome(url: str, level: int):
     """Array (z, y, x view) and level transform (scale, translation, z y x µm) of an OME-Zarr."""
     root = zarr.open_group(_store(url), mode="r")
-    ms = root.attrs["multiscales"][0]
+    ms = _multiscales(root)[0]
     axes = [a["name"] for a in ms["axes"]]
     ds = ms["datasets"][level]
     tf = {t["type"]: t[t["type"]] for t in ds["coordinateTransformations"]}
@@ -75,7 +80,7 @@ def _read(array, lead: int, lo, hi) -> NDArray[np.float32]:
 def random_centres(url: str, n: int, seed: int, overview_level: int | None = None) -> NDArray:
     """``n`` physical (z, y, x µm) points inside the tissue, from a low-resolution overview."""
     root = zarr.open_group(_store(url), mode="r")
-    levels = len(root.attrs["multiscales"][0]["datasets"])
+    levels = len(_multiscales(root)[0]["datasets"])
     level = levels - 1 if overview_level is None else overview_level
     array, lead, scale, translation = open_ome(url, level)
     ov = _read(array, lead, (0, 0, 0), array.shape[lead:])

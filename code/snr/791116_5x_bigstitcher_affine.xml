@@ -1,0 +1,745 @@
+<?xml version='1.0' encoding='utf-8'?>
+<SpimData version="0.2">
+  <BasePath type="relative">.</BasePath>
+  <SequenceDescription>
+    <ImageLoader format="bdv.multimg.zarr" version="3.0">
+      <zarr type="absolute">s3://aind-open-data/exaSPIM_791116_2026-06-09_16-31-33_processed_2026-06-16_12-28-34/flatfield_correction/SPIM.ome.zarr/</zarr>
+      <zgroups>
+        <zgroup setup="0" tp="0" path="tile_000000_ch_561.zarr" indicies="[]" />
+        <zgroup setup="1" tp="0" path="tile_000001_ch_561.zarr" indicies="[]" />
+        <zgroup setup="2" tp="0" path="tile_000002_ch_561.zarr" indicies="[]" />
+        <zgroup setup="3" tp="0" path="tile_000003_ch_561.zarr" indicies="[]" />
+        <zgroup setup="4" tp="0" path="tile_000004_ch_561.zarr" indicies="[]" />
+        <zgroup setup="5" tp="0" path="tile_000005_ch_561.zarr" indicies="[]" />
+        <zgroup setup="6" tp="0" path="tile_000006_ch_561.zarr" indicies="[]" />
+        <zgroup setup="7" tp="0" path="tile_000007_ch_561.zarr" indicies="[]" />
+        <zgroup setup="8" tp="0" path="tile_000008_ch_561.zarr" indicies="[]" />
+        <zgroup setup="9" tp="0" path="tile_000009_ch_561.zarr" indicies="[]" />
+        <zgroup setup="10" tp="0" path="tile_000010_ch_561.zarr" indicies="[]" />
+        <zgroup setup="11" tp="0" path="tile_000011_ch_561.zarr" indicies="[]" />
+        <zgroup setup="12" tp="0" path="tile_000012_ch_561.zarr" indicies="[]" />
+        <zgroup setup="13" tp="0" path="tile_000013_ch_561.zarr" indicies="[]" />
+        <zgroup setup="14" tp="0" path="tile_000014_ch_561.zarr" indicies="[]" />
+        <zgroup setup="15" tp="0" path="tile_000015_ch_561.zarr" indicies="[]" />
+        <zgroup setup="16" tp="0" path="tile_000016_ch_561.zarr" indicies="[]" />
+        <zgroup setup="17" tp="0" path="tile_000017_ch_561.zarr" indicies="[]" />
+        <zgroup setup="18" tp="0" path="tile_000018_ch_561.zarr" indicies="[]" />
+        <zgroup setup="19" tp="0" path="tile_000019_ch_561.zarr" indicies="[]" />
+      </zgroups>
+    </ImageLoader>
+    <ViewSetups>
+      <ViewSetup>
+        <id>0</id>
+        <name>tile_000000_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>0</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>1</id>
+        <name>tile_000001_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>1</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>2</id>
+        <name>tile_000002_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>2</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>3</id>
+        <name>tile_000003_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>3</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>4</id>
+        <name>tile_000004_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>4</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>5</id>
+        <name>tile_000005_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>5</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>6</id>
+        <name>tile_000006_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>6</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>7</id>
+        <name>tile_000007_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>7</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>8</id>
+        <name>tile_000008_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>8</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>9</id>
+        <name>tile_000009_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>9</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>10</id>
+        <name>tile_000010_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>10</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>11</id>
+        <name>tile_000011_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>11</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>12</id>
+        <name>tile_000012_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>12</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>13</id>
+        <name>tile_000013_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>13</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>14</id>
+        <name>tile_000014_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>14</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>15</id>
+        <name>tile_000015_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>15</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>16</id>
+        <name>tile_000016_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>16</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>17</id>
+        <name>tile_000017_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>17</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>18</id>
+        <name>tile_000018_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>18</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <ViewSetup>
+        <id>19</id>
+        <name>tile_000019_ch_561</name>
+        <size>14192 10640 18432</size>
+        <voxelSize>
+          <unit>µm</unit>
+          <size>0.748 0.748 1.0</size>
+        </voxelSize>
+        <attributes>
+          <illumination>0</illumination>
+          <channel>0</channel>
+          <tile>19</tile>
+          <angle>0</angle>
+        </attributes>
+      </ViewSetup>
+      <Attributes name="illumination">
+        <Illumination>
+          <id>0</id>
+          <name>0</name>
+        </Illumination>
+      </Attributes>
+      <Attributes name="channel">
+        <Channel>
+          <id>0</id>
+          <name>0</name>
+        </Channel>
+      </Attributes>
+      <Attributes name="tile">
+        <Tile>
+          <id>0</id>
+          <name>tile_000000_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>1</id>
+          <name>tile_000001_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>2</id>
+          <name>tile_000002_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>3</id>
+          <name>tile_000003_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>4</id>
+          <name>tile_000004_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>5</id>
+          <name>tile_000005_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>6</id>
+          <name>tile_000006_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>7</id>
+          <name>tile_000007_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>8</id>
+          <name>tile_000008_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>9</id>
+          <name>tile_000009_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>10</id>
+          <name>tile_000010_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>11</id>
+          <name>tile_000011_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>12</id>
+          <name>tile_000012_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>13</id>
+          <name>tile_000013_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>14</id>
+          <name>tile_000014_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>15</id>
+          <name>tile_000015_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>16</id>
+          <name>tile_000016_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>17</id>
+          <name>tile_000017_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>18</id>
+          <name>tile_000018_ch_561</name>
+        </Tile>
+        <Tile>
+          <id>19</id>
+          <name>tile_000019_ch_561</name>
+        </Tile>
+      </Attributes>
+      <Attributes name="angle">
+        <Angle>
+          <id>0</id>
+          <name>0</name>
+        </Angle>
+      </Attributes>
+    </ViewSetups>
+    <Timepoints type="pattern">
+      <integerpattern>0</integerpattern>
+    </Timepoints>
+    <MissingViews />
+  </SequenceDescription>
+  <ViewRegistrations>
+    <ViewRegistration timepoint="0" setup="0">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 39480.4252 0.0 1.0 0.0 3462.0257 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="1">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>0.9979784849684319 -0.0018637202019488553 -2.1802514758128468E-4 71.94471350241953 5.147897653697902E-4 1.0041589808669753 0.0026050230837541565 -14.556025084408907 0.0015043655996167184 -2.0512662137363408E-4 0.9998575121601411 -59.060358938643624</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999746402645755 -0.002009473685309716 -0.0068323380508859876 41.24354722718308 0.0020031898593856853 0.9999975644692825 -9.264372030249311E-4 -124.55181083808208 0.0068341830616973605 9.127272385231449E-4 0.9999762301529311 -323.4763013777383</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 39480.4252 0.0 1.0 0.0 -6539.5743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="2">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>0.9991058045055888 -0.001412341726020212 5.297429328183975E-4 20.75072277675459 0.001987198966932303 1.0034045608469782 0.0010420713391312139 -74.43748821928139 0.002154568896521566 4.38949327716074E-5 0.9990379614120934 -79.80042080966447</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999776219765342 -0.0012812216916844974 -0.006566126493852893 46.55368460899184 0.0012751637708213908 0.9999987575864833 -9.267053728620593E-4 -23.029966163271467 0.006567305651034094 9.183117484078873E-4 0.9999780133583034 -318.49581004647825</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 39480.4252 0.0 1.0 0.0 -16541.1743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="3">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 39480.4252 0.0 1.0 0.0 -26542.7743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="4">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999919394310857 8.461237346964438E-4 -0.003924939169103539 57.36678714118954 -8.493905080368833E-4 0.9999992942200957 -8.307196128054852E-4 -23.245756095927746 0.0039242335073790754 8.340467228076565E-4 0.9999919523463394 -149.66243257589122</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 26139.9452 0.0 1.0 0.0 3462.0257 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="5">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>0.9993346751241747 -0.0011689609285943322 -1.6896554007724145E-4 19.05769270798205 0.0010884803581686024 1.0060425260321133 0.00103057477771046 -16.989053744937003 2.9298209793447586E-4 -7.211083054256924E-4 0.9988451270422267 -4.430667448918246</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999844027888166 -0.0022494933168162924 -0.00511213838932224 58.40787087836104 0.0022427991273943934 0.9999966205375771 -0.0013148252733992873 -81.25519687573733 0.005115078803707944 0.0013033392662731376 0.9999860685407519 -184.6124025805566</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 26139.9452 0.0 1.0 0.0 -6539.5743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="6">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0008732736475021 7.852788951123477E-4 1.2363066714299136E-4 -23.611929073887886 -3.6280869790319124E-4 1.0037554076628128 9.689321490102333E-4 21.0693956944213 -5.238653914244675E-4 -2.3868857286984575E-4 0.9989972616464065 24.843697246629425</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999746496379843 -0.004938564765206002 -0.005129391723251614 31.868393523541855 0.004932128282704744 0.9999870346862604 -0.0012667162204971227 -116.102505204698 0.00513558097917269 0.001241385290791041 0.9999860422878742 -183.15732661043694</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 26139.9452 0.0 1.0 0.0 -16541.1743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="7">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0019068937429718 0.0015135173282606752 0.001179798055603371 -57.208829661781685 -0.001698431720420686 1.001154879642567 0.0022994986525149467 10.130886427324663 -5.92807017584514E-4 -2.815453817838111E-4 0.9995526567379998 20.73513431183711</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999688993574953 -0.005708238759333282 -0.005442088571971574 11.55602697113067 0.005695519050241627 0.9999810192788181 -0.0023499244336171263 -60.27530831217358 0.005455399206939221 0.0023188558303226378 0.9999824306092235 -156.25355929143734</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 26139.9452 0.0 1.0 0.0 -26542.7743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="8">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0099696345589613 -8.957480144338064E-4 0.004215545529487768 -181.27175130030832 0.0030094218827219294 0.9847931358969741 0.006369185852696886 45.01379346301445 -4.0521091967958556E-4 -7.230736846700803E-4 0.9989046916304956 21.727372148890087</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999926540159928 -0.0017354447351033038 -0.0034176228028389385 31.48096379703232 0.001730698004274929 0.9999975343889235 -0.0013913664119175673 -131.87943724480647 0.0034200290158244617 0.0013854413179979193 0.999993191953768 -70.92764037327834</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 12799.4652 0.0 1.0 0.0 3462.0257 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="9">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>0.9997810069508138 -9.624786598849349E-4 -2.1612527527117405E-4 5.436297144212753 8.753874641070295E-4 1.0004950495554346 5.364271924315801E-4 -10.821063349490197 -6.12143062192227E-4 0.0011819700902984777 0.9995771140089664 15.00198777456364</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999914075395268 -0.0013155675390757143 -0.003931174018740408 27.265800553366056 0.001315181795655054 0.9999991300770198 -1.0070773360145698E-4 -88.60105505020853 0.003931303086747051 9.553665976923718E-5 0.9999922678344998 -80.07027450005262</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 12799.4652 0.0 1.0 0.0 -6539.5743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="10">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0003379538045898 0.002555754868821703 4.3515707791144485E-4 13.581411948648828 -0.0019279301152223057 0.999411269490111 4.953033158197412E-4 25.20008042897894 1.92581426275969E-4 -5.239596230186824E-4 1.0002489540534414 -12.698512861734049</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999737440067497 -0.005885713854656639 -0.004227253191472268 -11.922365095491664 0.005883071698826463 0.9999824915735657 -6.371920514218311E-4 -95.93741630329365 0.004230929509005876 6.123060876971053E-4 0.9999908621166219 -83.09526832610572</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 12799.4652 0.0 1.0 0.0 -16541.1743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="11">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.000516844776477 0.002880978080186165 9.604221488924005E-4 9.097264343632402 -0.0024536415282312516 1.0001888848023832 1.9892454951946946E-4 50.64708273623112 2.6239184946238433E-4 -8.360818575474784E-4 1.0006734760977032 -24.28231529806847</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999668470679859 -0.00664775174090245 -0.0047023570369336505 -29.757767423398278 0.006645583376767073 0.9999778042917218 -4.765978281339832E-4 -33.891693371559555 0.004705420968830326 4.45332121762319E-4 0.9999888302840225 -77.94853557548413</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 12799.4652 0.0 1.0 0.0 -26542.7743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="12">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0008266686612952 -0.002324638991667797 1.6995867169160232E-4 -4.720922657046853 0.0011344148036786458 1.002162828419418 -4.439854095433229E-4 -23.009134495978124 -7.248904759428974E-4 -7.767075661076127E-5 0.9998592748249985 10.35356713710794</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999920942900543 -5.308842554379711E-4 -0.003940751108410179 27.976212666468527 5.271145319549795E-4 0.999999402597877 -9.575772339833669E-4 -100.88929107053886 0.00394125711687399 9.554924364794437E-4 0.99999177672946 -21.16971046499566</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 -541.0148 0.0 1.0 0.0 3462.0257 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="13">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0002613229357298 -2.3039074516888934E-4 -2.050207888361713E-4 -2.4230308840297896 6.895025211500334E-4 0.9985942867940183 -3.750998696339725E-4 -6.997619456922164 -1.1274503331818238E-4 3.68826377288994E-4 1.0000710346888775 1.2976683190976437</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999925636589893 -7.984651786939413E-4 -0.003772940508376298 18.25690183380804 7.959084978450186E-4 0.9999994526837308 -6.790890228072891E-4 -43.171483008812444 0.003773480672322522 6.760810574572587E-4 0.9999926518520115 -25.13803071692564</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 -541.0148 0.0 1.0 0.0 -6539.5743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="14">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>0.9996126657036633 -0.0014753479166121194 2.779808390789615E-4 -13.59043126440826 6.243188415928256E-4 0.9987469980336816 -1.716655068666885E-4 -9.409560622937079 2.542824305995794E-4 7.066903851660822E-5 1.000695633013026 -9.386302655105021</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999903877940465 -0.0016547596104427849 -0.0040603066565379625 11.128920567296888 0.0016521366841298663 0.9999984244508527 -6.492612649469732E-4 17.291364740618096 0.004061374630643129 6.425468425378935E-4 0.999991546149099 -26.84837463111944</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 -541.0148 0.0 1.0 0.0 -16541.1743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="15">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>0.9990547413748587 -0.0015442624810822743 2.452137045093452E-4 -10.504399706956853 6.308257486321104E-4 0.998812950199586 -1.6199291661816312E-4 -8.509666460803613 3.3263967497219166E-4 -8.57001512124703E-4 1.0008465044251083 -26.910311598730523</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999895434260964 -0.0021228059202703276 -0.004050522619586188 0.11642129690974201 0.002120197197382256 0.9999975422769807 -6.482313183696778E-4 83.19230093891932 0.004051888733803847 6.396366333850107E-4 0.9999915864959392 -13.798228872456093</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 -541.0148 0.0 1.0 0.0 -26542.7743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="16">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 -13881.4948 0.0 1.0 0.0 3462.0257 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="17">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>0.9992041309180671 8.096304166156888E-4 5.319908391078943E-4 -5.7601501407757745 0.0013174241549594031 1.000440598863403 -1.6118045953771325E-4 -0.32789222113738414 7.812454111528091E-4 3.7024433167746765E-4 0.9991546245876276 10.977733851659943</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999984306129918 -0.0010536978962198858 -0.0014242514864778082 21.034583395683637 0.0010526020234811907 0.9999991495884796 -7.699683744180026E-4 -9.981865587011836 0.0014250615893342164 7.684679960430265E-4 0.9999986893273439 21.166046652277146</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 -13881.4948 0.0 1.0 0.0 -6539.5743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="18">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>0.9992042751296291 -0.002995154143615828 2.2158098065082663E-4 -26.646205053317995 0.0024396198652784007 1.0013145187735124 -5.702642391860055E-4 15.332829667293144 -0.0011076205782519597 -5.564201976086132E-4 0.999789699339216 -5.408111495628013</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>0.9999986683827224 7.002838529132914E-4 -0.0014740540380182492 28.647939823571626 -6.999739289797526E-4 0.999999732808712 2.107581629703779E-4 36.890782908208905 0.0014742012347022501 -2.0972608292464665E-4 0.9999988913722302 11.546156414806319</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 -13881.4948 0.0 1.0 0.0 -16541.1743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+    <ViewRegistration timepoint="0" setup="19">
+      <ViewTransform type="affine">
+        <Name>AffineModel3D regularized with an RigidModel3D, lambda = 0.05</Name>
+        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>RigidModel3D</Name>
+        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 -13881.4948 0.0 1.0 0.0 -26542.7743 0.0 0.0 1.0 999.5</affine>
+      </ViewTransform>
+    </ViewRegistration>
+  </ViewRegistrations>
+  <ViewInterestPoints>
+    <ViewInterestPointsFile timepoint="0" setup="0" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_0/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="1" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_1/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="2" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_2/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="3" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_3/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="4" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_4/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="5" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_5/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="6" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_6/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="7" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_7/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="8" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_8/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="9" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_9/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="10" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_10/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="11" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_11/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="12" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_12/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="13" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_13/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="14" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_14/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="15" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_15/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="16" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_16/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="17" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_17/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="18" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_18/beads</ViewInterestPointsFile>
+    <ViewInterestPointsFile timepoint="0" setup="19" label="beads" params="DOG (Spark) s=2.0 t=0.01 overlappingOnly=false min=false max=true downsampleXY=16 downsampleZ=16 minIntensity=0.0 maxIntensity=60.0">tpId_0_viewSetupId_19/beads</ViewInterestPointsFile>
+  </ViewInterestPoints>
+  <BoundingBoxes />
+  <PointSpreadFunctions />
+  <StitchingResults />
+  <IntensityAdjustments />
+</SpimData>

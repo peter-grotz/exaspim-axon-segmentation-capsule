@@ -413,6 +413,46 @@ def snr_blocks_cmd(
     snr_blocks(url, pts, out, weights, cfg, level=level, device=device)
 
 
+@app.command("snr-pair")
+def snr_pair_cmd(
+    url_a: Annotated[str, typer.Argument(help="Acquisition a (e.g. the 1x tile), OME-Zarr")],
+    url_b: Annotated[str, typer.Argument(help="Acquisition b (e.g. the 5x fused), OME-Zarr")],
+    affine: Annotated[Path, typer.Option(help="JSON with A, t: p_b = A p_a + t (um, z y x)")],
+    out: Annotated[Path, typer.Option(help="Output directory")],
+    weights: Annotated[str, typer.Option(help="Fine-tuned .safetensors or registered name")],
+    n_blocks: Annotated[int, typer.Option(help="Random tissue blocks in a")] = 20,
+    seed: Annotated[int, typer.Option()] = 0,
+    level_a: Annotated[int, typer.Option(help="Level of a to segment")] = 0,
+    level_b: Annotated[int, typer.Option(help="Level of b to segment")] = 2,
+    raw_tiles: Annotated[
+        str | None, typer.Option(help="Raw tiles of b (SPIM.ome.zarr root): score raw, not fused")
+    ] = None,
+    stitching: Annotated[
+        Path | None, typer.Option(help="BigStitcher XML placing the raw tiles in the fusion")
+    ] = None,
+    raw_voxel_um: Annotated[str, typer.Option(help="Raw tile level-0 voxel z,y,x (um)")] = (
+        "1.0,0.748,0.748"
+    ),
+    device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
+) -> None:
+    """Axon SNR at the same places in two acquisitions of one brain (e.g. 1x vs 5x)."""
+    import json as _json
+
+    from exaspim_axon_segmentation.snr import random_centres
+    from exaspim_axon_segmentation.snr_pair import PairConfig, RawTiles, snr_pair
+
+    pts = random_centres(url_a, n_blocks, seed)
+    cfg = PairConfig(level_a=level_a, level_b=level_b)
+    tiles = None
+    if raw_tiles is not None:
+        if stitching is None:
+            raise typer.BadParameter("--raw-tiles needs --stitching")
+        vox = tuple(float(v) for v in raw_voxel_um.split(","))
+        tiles = RawTiles(raw_tiles, str(stitching), vox)
+    snr_pair(url_a, url_b, _json.loads(affine.read_text()), pts, out, weights, cfg,
+             raw_tiles=tiles, device=device)  # fmt: skip
+
+
 @app.command("skeletonize-blocks")
 def skeletonize_blocks(
     prediction: Annotated[str, typer.Argument(help="Probability OME-Zarr from `predict`")],
