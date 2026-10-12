@@ -58,11 +58,17 @@ set -euo pipefail
 #            axon SNR at the same places in two acquisitions (a = 1x tile, b = 5x fused); AFFINE = a
 #            json in code/snr/ with p_b = A p_a + t; RAW_ROOT + STITCHING (xml in code/snr/) read b
 #            from its raw tiles as well ('none' = fused only); results in /results/snr_pair/
+#   finetune1x [STEPS] [MAX_MINUTES] [N_CUBES] [START_WEIGHTS]
+#            fine-tune for 1x data (20 x 15 x 15 um voxels): 822178 MD lobe and the N_CUBES most
+#            traced 794495 cubes, level 2 averaged 5x5x5, with the 1x blur/contrast/noise of
+#            code/train/degradation_1x.json added to every patch; starts from START_WEIGHTS
+#            (default the v2 weights); then scores it on 30 same-day 791116 1x/5x patch pairs
+#            (5x segmented with the start weights); results in /results/finetune1x/, /results/snr_pair/
 #   slabs [WORKERS] [RELAXED]
 #            skeletonize every attached */probability.zarr (slabs from box runs, as data assets) as
 #            one volume, block by block; results in /results/slabs_skeleton/
 MODE="predict"
-if [[ "${1:-}" =~ ^(predict|finetune|somata|expand|box|slabs|snr|snrpair)$ ]]; then MODE="$1"; shift; fi
+if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|somata|expand|box|slabs|snr|snrpair)$ ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -138,6 +144,38 @@ if [[ "${MODE}" == "box" ]]; then
             2>&1 | tee "${RESULTS}/box_skeleton_${cleanup}.log"
         echo "=== skeleton (${cleanup}) took $(( $(date +%s) - t )) s"
     done
+    exit 0
+fi
+
+if [[ "${MODE}" == "finetune1x" ]]; then
+    STEPS="${1:-4000}"
+    MAX_MINUTES="${2:-40}"
+    N_CUBES="${3:-40}"
+    START="${4:-/data/trailmap_finetune_v2/best.safetensors}"
+    SCRATCH="$(mktemp -d)"
+    echo "=== finetune1x · ${STEPS} steps / ${MAX_MINUTES} min · ${N_CUBES} cubes · from ${START}"
+    exaspim-axon -v make-coarse-volumes \
+        s3://aind-open-data/exaSPIM_822178_2026-04-03_19-07-07_processed_2026-04-16_13-16-45 -r MD \
+        --swc "${CODE_DIR}/traces/822178/N003-822178-JM.swc" \
+        --swc "${CODE_DIR}/traces/822178/Neuron2_snapped_0.748um.swc" \
+        --envelope-um 50 --out "${SCRATCH}/coarse" 2>&1 | tee "${RESULTS}/make_coarse_822178.log"
+    exaspim-axon -v make-coarse-volumes \
+        s3://aind-open-data/exaSPIM_794495_2026-01-21_14-25-07_processed_2026-07-28_08-24-11 \
+        --points "${CODE_DIR}/traces/794495/points_4um.npz" --n-cubes "${N_CUBES}" \
+        --out "${SCRATCH}/coarse/794495" 2>&1 | tee "${RESULTS}/make_coarse_794495.log"
+    volumes=()
+    for v in "${SCRATCH}"/coarse/*_lobe "${SCRATCH}"/coarse/794495/cube_*; do volumes+=(--volume "${v}"); done
+    exaspim-axon -v finetune "${volumes[@]}" --out "${RESULTS}/finetune1x" --weights "${START}" \
+        --degradation "${CODE_DIR}/train/degradation_1x.json" --steps "${STEPS}" \
+        --max-minutes "${MAX_MINUTES}" --device cuda 2>&1 | tee "${RESULTS}/finetune1x.log"
+    exaspim-axon -v snr-pair \
+        s3://aind-open-data/791116_2026-06-09_12-58-40/SPIM/tile_000001_ch_561.ome.zarr \
+        s3://aind-open-data/exaSPIM_791116_2026-06-09_16-31-33_processed_2026-06-16_12-28-34/fusion/fused.zarr \
+        --affine "${CODE_DIR}/snr/791116_0609_1x_to_5x.json" --out "${RESULTS}/snr_pair" \
+        --weights "${START}" --weights-a "${RESULTS}/finetune1x/best.safetensors" --n-blocks 30 --seed 0 \
+        --raw-tiles s3://aind-open-data/exaSPIM_791116_2026-06-09_16-31-33/SPIM.ome.zarr \
+        --stitching "${CODE_DIR}/snr/791116_5x_bigstitcher_affine.xml" --device cuda \
+        2>&1 | tee "${RESULTS}/snr_pair.log"
     exit 0
 fi
 

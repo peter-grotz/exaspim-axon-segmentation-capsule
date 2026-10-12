@@ -182,6 +182,79 @@ def make_labels(
     log.info("Labels: %s", info["voxels"])
 
 
+@app.command("make-coarse-volumes")
+def make_coarse_volumes(
+    asset: AssetArg,
+    out: Annotated[Path, typer.Option(help="Output directory (one volume per lobe/cube)")],
+    swc: Annotated[
+        list[Path] | None, typer.Option("--swc", help="Lobe mode: complete traces; repeat")
+    ] = None,
+    region: Annotated[
+        list[str] | None, typer.Option("--region", "-r", help="Lobe mode: CCF region")
+    ] = None,
+    points: Annotated[
+        Path | None,
+        typer.Option(help="Cube mode: npz with axon_zyx_um (and other_zyx_um) trace points"),
+    ] = None,
+    cube_um: Annotated[str, typer.Option(help="Cube mode: cube size z,y,x (um)")] = (
+        "2000,2400,2400"
+    ),
+    n_cubes: Annotated[int, typer.Option(help="Cube mode: most-traced cubes to keep")] = 40,
+    val_fraction: Annotated[float, typer.Option(help="Cube mode: held-out cubes (by x)")] = 0.2,
+    factor: Annotated[str, typer.Option(help="Pooling of level 2 per axis z,y,x")] = "5,5,5",
+    envelope_um: Annotated[float, typer.Option(help="Label only this close to traces")] = 60.0,
+) -> None:
+    """Training volumes at a 1x-like voxel size: level 2 mean-pooled, labelled from traces."""
+    import numpy as np
+
+    from exaspim_axon_segmentation.io import Box, CcfOntology, ExaspimAsset, RegionRoi
+    from exaspim_axon_segmentation.train.coarse import (
+        CoarseLabelConfig,
+        make_coarse_volume,
+        trace_cubes,
+    )
+    from exaspim_axon_segmentation.train.labels import traced_lobe_box
+    from exaspim_axon_segmentation.train.swc import read_swc, resample
+
+    fac = tuple(int(v) for v in factor.split(","))
+    cfg = CoarseLabelConfig(envelope_um=envelope_um)
+    a = ExaspimAsset(asset)
+    fused, tf = a.fused, a.fused.transforms[2]
+    brain = a.root.rstrip("/").split("/")[-1].split("_")[1]
+    if swc:  # lobe mode, as make-labels
+        roi = RegionRoi.from_annotation(a.annotation, CcfOntology.load().resolve(region or []))
+        pts = np.concatenate([resample(read_swc(p), 0.5 * min(tf.scale)).zyx_um for p in swc])
+        box, inside = traced_lobe_box(fused, 2, roi, pts, pad_um=cfg.edge_radius_um + 40)
+        prov = {"asset": a.root, "regions": list(region or []), "traces": [p.name for p in swc]}
+        make_coarse_volume(fused, box, inside, pts, out / f"{brain}_lobe", prov, factor=fac,
+                           config=cfg)  # fmt: skip
+        return
+    if points is None:
+        raise typer.BadParameter("give --swc (lobe mode) or --points (cube mode)")
+    z = np.load(points)
+    axon = z["axon_zyx_um"]
+    other = z.get("other_zyx_um")
+    size = np.array([float(v) for v in cube_um.split(",")])
+    # only some neurons are traced: bright untraced fibres near them are ignored, not negatives
+    cfg = CoarseLabelConfig(envelope_um=envelope_um, hard_negatives=False)
+    centres = trace_cubes(axon, tuple(size), n_cubes, min_points=200)
+    cut = np.quantile([c[2] for c in centres], 1 - val_fraction)
+    shape = np.asarray(fused.shape(2))
+    for k, c in enumerate(centres):
+        lo = np.clip(np.floor(tf.to_index(c - size / 2)).astype(int), 0, shape)
+        hi = np.clip(np.ceil(tf.to_index(c + size / 2)).astype(int), 0, shape)
+        near = np.all(np.abs(axon - c) <= size / 2 + cfg.envelope_um, axis=1)
+        prov = {"asset": a.root, "brain": brain, "cube": f"cube_{k:03d}",
+                "split": "val" if c[2] >= cut else "train", "centre_um": c.tolist()}  # fmt: skip
+        try:
+            make_coarse_volume(fused, Box.from_arrays(lo, hi), None, axon[near],
+                               out / f"cube_{k:03d}", prov, factor=fac, config=cfg,
+                               other_traced_zyx_um=None if other is None else other[
+                                   np.all(np.abs(other - c) <= size / 2 + 30, axis=1)])  # fmt: skip
+        except ValueError as error:
+            log.warning("cube %d skipped: %s", k, error)
+
+
 @app.command()
 def finetune(
     volume: Annotated[
@@ -203,6 +276,11 @@ def finetune(
     lr: Annotated[float, typer.Option()] = 1e-4,
     max_minutes: Annotated[float, typer.Option(help="Stop training after this long")] = 40.0,
     device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
+    degradation: Annotated[
+        Path | None,
+        typer.Option(help="JSON from scripts/fit_degradation2.py: add the 1x look to patches"),
+    ] = None,
+    gain_max: Annotated[float, typer.Option(help="Degradation: largest contrast gain")] = 2.5,
 ) -> None:
     """Fine-tune on region volumes (spatially split) and traced blocks (held out by brain)."""
     from exaspim_axon_segmentation.inference.predict import resolve_device
@@ -210,8 +288,21 @@ def finetune(
     from exaspim_axon_segmentation.train.trainer import TrainConfig, build_volumes
     from exaspim_axon_segmentation.train.trainer import finetune as run_finetune
 
+    extra = {}
+    if degradation is not None:
+        import json as _json
+
+        d = _json.loads(degradation.read_text())
+        extra = {"degrade_blur": (d["blur_sigma_vox"]["z"], d["blur_sigma_vox"]["xy"]),
+                 "degrade_gain": (1.0, gain_max),
+                 "degrade_noise_sd": d["noise_floor_sd"]["extra"]}  # fmt: skip
     config = TrainConfig(
-        input_size=input_size, batch_size=batch_size, steps=steps, lr=lr, max_minutes=max_minutes
+        input_size=input_size,
+        batch_size=batch_size,
+        steps=steps,
+        lr=lr,
+        max_minutes=max_minutes,
+        **extra,
     )
     volumes = build_volumes(
         volume, config, holdout_brains=holdout_brain or [], region_share=region_share
@@ -433,6 +524,9 @@ def snr_pair_cmd(
     raw_voxel_um: Annotated[str, typer.Option(help="Raw tile level-0 voxel z,y,x (um)")] = (
         "1.0,0.748,0.748"
     ),
+    weights_a: Annotated[
+        str | None, typer.Option(help="Other weights for a (e.g. a 1x model); default --weights")
+    ] = None,
     device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
 ) -> None:
     """Axon SNR at the same places in two acquisitions of one brain (e.g. 1x vs 5x)."""
@@ -450,7 +544,7 @@ def snr_pair_cmd(
         vox = tuple(float(v) for v in raw_voxel_um.split(","))
         tiles = RawTiles(raw_tiles, str(stitching), vox)
     snr_pair(url_a, url_b, _json.loads(affine.read_text()), pts, out, weights, cfg,
-             raw_tiles=tiles, device=device)  # fmt: skip
+             raw_tiles=tiles, weights_a=weights_a, device=device)  # fmt: skip
 
 
 @app.command("skeletonize-blocks")

@@ -1,0 +1,36 @@
+{
+ "grid_um": [
+  20.0,
+  15.04,
+  15.04
+ ],
+ "pairs_used": [
+  "pair001",
+  "pair003",
+  "pair004",
+  "pair011",
+  "pair019",
+  "pair022",
+  "pair029"
+ ],
+ "blur_sigma_vox": {
+  "z": 1.5,
+  "xy": 0.5
+ },
+ "haze_sigma_vox": {
+  "z": 4.0,
+  "xy": 8.0
+ },
+ "gain_blur": 1.7069704567595472,
+ "gain_haze": 0.0,
+ "offset": 0.0035205477223755536,
+ "r2": 0.3967837392970952,
+ "r2_no_blur": 0.2920991172739168,
+ "noise_floor_sd": {
+  "1x": 0.007488260366430411,
+  "5x_averaged": 0.0018648009874363413,
+  "extra": 0.007252348625976895,
+  "note": "normalized units (background 0, median foreground 0.25)"
+ },
+ "source": "791116 same-day 1x (791116_2026-06-09_12-58-40 tile_000001_ch_561) vs 5x raw tiles averaged to 20 x 14.96 x 14.96 um; scripts/fit_degradation2.py"
+}

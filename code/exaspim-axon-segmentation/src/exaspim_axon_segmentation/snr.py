@@ -57,7 +57,8 @@ def _store(url: str):
 
 def _multiscales(root) -> list:
     attrs = root.attrs
-    return attrs["multiscales"] if "multiscales" in attrs else attrs["ome"]["multiscales"]  # 0.4/0.5
+    # OME-Zarr 0.4 keeps multiscales at the top level, 0.5 under "ome"
+    return attrs["multiscales"] if "multiscales" in attrs else attrs["ome"]["multiscales"]
 
 
 def open_ome(url: str, level: int):

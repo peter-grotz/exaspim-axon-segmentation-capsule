@@ -172,12 +172,14 @@ def snr_pair(
     config: PairConfig = PairConfig(),  # noqa: B008
     *,
     raw_tiles: RawTiles | None = None,
+    weights_a: str | None = None,
     device: str = "auto",
 ) -> list[dict]:
     """Segment and score matched blocks in both acquisitions; writes JSON and preview MIPs.
 
     With ``raw_tiles``, *b* is read from its raw tiles (key ``b``) and also from the fused volume
-    ``url_b`` (key ``b_fused``); without, from the fused volume only (key ``b``).
+    ``url_b`` (key ``b_fused``); without, from the fused volume only (key ``b``). ``weights_a``
+    segments *a* with other weights than *b* (default: the same).
     """
     import torch
 
@@ -200,7 +202,11 @@ def snr_pair(
     dev = resolve_device(device)
     precision = resolve_precision("auto") if dev.type == "cuda" else torch.float32
     predictor = TilePredictor(load_model(weights), dev, precision)
-    predict = lambda v: _predict(predictor, v, 160)  # noqa: E731
+    predict_b = lambda v: _predict(predictor, v, 160)  # noqa: E731
+    predict_a = predict_b
+    if weights_a is not None:  # e.g. a model fine-tuned for a's voxel size
+        predictor_a = TilePredictor(load_model(weights_a), dev, precision)
+        predict_a = lambda v: _predict(predictor_a, v, 160)  # noqa: E731
     sc = SnrConfig(axon_p=config.axon_p)
     qc_cfg = DetectionQcConfig(axon_p=config.axon_p)
     half = np.asarray(config.block_um) / 2
@@ -266,6 +272,7 @@ def snr_pair(
             except ValueError as error:
                 row[name] = {"skipped": f"no foreground: {error}", "verdict": "no_signal"}
                 continue
+            predict = predict_a if name == "a" else predict_b
             prob = predict(scaling(raw))
             row[name] = score(raw, prob, sc) | {
                 "shape": list(raw.shape),

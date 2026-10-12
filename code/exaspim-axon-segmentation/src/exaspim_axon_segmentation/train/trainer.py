@@ -49,6 +49,13 @@ class TrainConfig:
     freeze_batchnorm: bool = True
     max_minutes: float | None = 40.0
     seed: int = 0
+    # 1x look for coarse (averaged 5x) volumes, on normalized patches: Gaussian blur (sigma in
+    # voxels, z and y/x), contrast gain, additive noise SD; each scaled per patch by a random
+    # factor in [1 - degrade_jitter, 1 + degrade_jitter] (gain: drawn in [gain_lo, gain_hi]).
+    degrade_blur: tuple[float, float] | None = None
+    degrade_gain: tuple[float, float] = (1.0, 1.0)
+    degrade_noise_sd: float = 0.0
+    degrade_jitter: float = 0.5
 
     @property
     def output_size(self) -> int:
@@ -150,6 +157,21 @@ def augment(
         raw, lab = raw.transpose(0, 2, 1), lab.transpose(0, 2, 1)
     gain = np.exp(rng.uniform(-jitter, jitter))
     return np.ascontiguousarray(raw * gain), np.ascontiguousarray(lab)
+
+
+def degrade(x: NDArray[np.float32], rng: np.random.Generator, config: TrainConfig) -> NDArray:
+    """Make a normalized averaged-5x patch look like a 1x one: blur, contrast, noise, clip."""
+    if config.degrade_blur is None:
+        return x
+    from scipy.ndimage import gaussian_filter
+
+    j = config.degrade_jitter
+    sz, sxy = (s * rng.uniform(1 - j, 1 + j) for s in config.degrade_blur)
+    x = gaussian_filter(x, (sz, sxy, sxy)) if max(sz, sxy) > 0 else x
+    x = x * rng.uniform(*config.degrade_gain)
+    sd = config.degrade_noise_sd * rng.uniform(1 - j, 1 + j)
+    x = x + rng.normal(0.0, sd, x.shape).astype(np.float32)
+    return np.clip(x, 0.0, 1.0).astype(np.float32)
 
 
 def weighted_bce(
@@ -268,7 +290,9 @@ def finetune(
         for _ in range(max(1, config.val_patches // config.batch_size)):
             xs, ys = zip(*(sampler.patch(sampler.center()) for _ in range(config.batch_size)),
                          strict=True)  # fmt: skip
-            batch = torch.stack([torch.from_numpy(v.scaling(x))[None] for x in xs])
+            batch = torch.stack(
+                [torch.from_numpy(degrade(v.scaling(x), val_rng, config))[None] for x in xs]
+            )
             groups.setdefault(v.group, []).append((batch, torch.from_numpy(np.stack(ys))))
     log.info("Training volumes %s; validation groups %s",
              {v.name: round(float(p), 3) for (v, _), p in zip(train, probs, strict=True)},
@@ -312,7 +336,7 @@ def finetune(
         for k in rng.choice(len(train), size=config.batch_size, p=probs):
             volume, sampler = train[k]
             r, lab = augment(*sampler.patch(sampler.center()), rng, config.intensity_jitter)
-            inputs.append(torch.from_numpy(volume.scaling(r))[None])
+            inputs.append(torch.from_numpy(degrade(volume.scaling(r), rng, config))[None])
             targets.append(lab)
         x = torch.stack(inputs).to(device)
         y = torch.from_numpy(np.stack(targets)).to(device)
@@ -375,7 +399,14 @@ def build_volumes(
         raw, labels, info = open_training_volume(d)
         scaling = estimate_scaling_array(raw, labels != Label.IGNORE, NormalizationConfig())
         width = raw.shape[2]
-        if "block" in info:
+        if "cube" in info:  # coarse trace cubes: split recorded per cube
+            val = info.get("split") == "val"
+            volumes.append(TrainingVolume(
+                name=f"{info['brain']}/{info['cube']}", raw=raw, labels=labels, scaling=scaling,
+                train_x=None if val else (0, width), val_x=(0, width) if val else None,
+                group=f"heldout-{info['brain']}" if val else "blocks",
+            ))  # fmt: skip
+        elif "block" in info:
             held = info["brain"] in holdout_brains
             volumes.append(TrainingVolume(
                 name=f"{info['brain']}/{info['block']}", raw=raw, labels=labels, scaling=scaling,
