@@ -17,6 +17,8 @@ resolution one) mapped onto *a*'s grid:
   *a*'s voxels,
 * ``b.at_a_voxel``: *b* mean-pooled to *a*'s voxel size on its own grid and scored on its own
   (max-pooled) detection, which needs no alignment,
+* ``b.down_to_a``: that mean-pooled *b* segmented again by the network and scored exactly as *a*
+  (same voxel size, detector and scoring),
 * ``a_matched`` / ``b_matched``: signal, background, noise and SNR of both acquisitions at the same
   voxel size (*b* averaged over each of *a*'s voxels) on the same mask (*b*'s axons).
 """
@@ -277,11 +279,35 @@ def snr_pair(
                 shp = [(n // q, q) for n, q in zip(raw.shape, f, strict=True)]
                 pooled = raw[cut].reshape(shp[0] + shp[1] + shp[2]).mean((1, 3, 5))
                 mask = prob[cut].reshape(shp[0] + shp[1] + shp[2]).max((1, 3, 5))
+                keys = ("axon_fraction", "signal", "background", "noise_sd", "snr")
                 at_a = score(pooled, mask, sc)
-                row[name]["at_a_voxel"] = {
-                    key: at_a.get(key)
-                    for key in ("axon_fraction", "signal", "background", "noise_sd", "snr")
-                } | {"voxel_um": (vox * np.array(f)).tolist()}
+                row[name]["at_a_voxel"] = {key: at_a.get(key) for key in keys} | {
+                    "voxel_um": (vox * np.array(f)).tolist(),
+                    "detection": f"{name} detections, max-pooled",
+                }
+                # the same averaged image segmented again, exactly as a is: same voxel size,
+                # same detector, same scoring
+                down = {"voxel_um": (vox * np.array(f)).tolist(), "shape": list(pooled.shape)}
+                if min(pooled.shape) < 64:
+                    down["skipped"] = (
+                        f"averaged block {pooled.shape} smaller than the network input"
+                    )
+                else:
+                    try:
+                        s_down = estimate_scaling_array(
+                            pooled, pooled > np.percentile(pooled, 10), norm
+                        )
+                        p_down = predict(s_down(pooled))
+                        down |= {key: score(pooled, p_down, sc).get(key) for key in keys}
+                        down["scaling"] = [s_down.offset, s_down.scale]
+                        np.savez_compressed(
+                            out_dir / f"block{k:03d}_{name}_down.npz",
+                            raw_mip=pooled.max(0),
+                            prob_mip=np.round(p_down.max(0) * 255).astype(np.uint8),
+                        )
+                    except ValueError as error:
+                        down["skipped"] = f"no foreground: {error}"
+                row[name]["down_to_a"] = down
             np.savez_compressed(
                 out_dir / f"block{k:03d}_{name}.npz",
                 raw_mip=raw.max(0),
