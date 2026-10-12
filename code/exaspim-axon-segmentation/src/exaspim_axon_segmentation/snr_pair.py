@@ -3,7 +3,9 @@
 The two volumes are related by a whole-brain affine, ``p_b = A p_a + t`` in physical µm (z, y, x),
 fitted beforehand on low-resolution overviews. Each block centre in acquisition *a* is mapped into
 *b* and refined locally, coarse then fine, by template matching of band-passed log intensity (1x
-block on *b* resampled to *a*'s voxel grid); blocks whose fine match is weak are kept but flagged.
+block on *b* resampled to *a*'s voxel grid); blocks whose fine match is weak are kept but
+flagged. With ``"match": false`` in the affine, blocks are placed by the affine alone (e.g. one
+built from metadata) and the cross metrics, which need the same tissue in both, are skipped.
 
 Both blocks are segmented natively (each at its own, correct voxel size) and scored as in
 :mod:`exaspim_axon_segmentation.snr`, with the acquisition QC of
@@ -13,6 +15,8 @@ resolution one) mapped onto *a*'s grid:
 * ``a_snr_on_b_mask``: SNR of *a* measured on the axons detected in *b*,
 * ``recall_a`` / ``precision_a``: agreement of *a*'s detection with *b*'s, within ``tol_vox`` of
   *a*'s voxels,
+* ``b.at_a_voxel``: *b* mean-pooled to *a*'s voxel size on its own grid and scored on its own
+  (max-pooled) detection, which needs no alignment,
 * ``a_matched`` / ``b_matched``: signal, background, noise and SNR of both acquisitions at the same
   voxel size (*b* averaged over each of *a*'s voxels) on the same mask (*b*'s axons).
 """
@@ -199,28 +203,32 @@ def snr_pair(
     qc_cfg = DetectionQcConfig(axon_p=config.axon_p)
     half = np.asarray(config.block_um) / 2
     tiles: dict = {}
+    do_match = affine.get("match", True)  # False: place blocks by the affine alone
     rows = []
     for k, pa in enumerate(np.atleast_2d(centres_um)):
         t0 = time.time()
         row: dict = {"block": k, "centre_a_um": np.round(pa, 1).tolist()}
         pb0 = aff @ pa + t
-        coarse = _match(ca, cb, aff, pa, pb0, half, np.full(3, config.coarse_margin_um))
-        fine = (
-            None
-            if coarse is None
-            else _match(la, fb, aff, pa, coarse[0], half, np.full(3, config.fine_margin_um))
-        )
-        if fine is None:
-            rows.append(row | {"skipped": "match crop outside a volume"})
-            continue
-        pb, ncc, ncc2 = fine
+        if do_match:
+            coarse = _match(ca, cb, aff, pa, pb0, half, np.full(3, config.coarse_margin_um))
+            fine = (
+                None
+                if coarse is None
+                else _match(la, fb, aff, pa, coarse[0], half, np.full(3, config.fine_margin_um))
+            )
+            if fine is None:
+                rows.append(row | {"skipped": "match crop outside a volume"})
+                continue
+            pb, ncc, ncc2 = fine
+        else:  # metadata mapping only: no image matching
+            pb, ncc, ncc2 = pb0, float("nan"), float("nan")
         d = pb - pb0
         row |= {
             "centre_b_um": np.round(pb, 1).tolist(),
             "refine_um": np.round(d, 1).tolist(),
             "match_ncc": ncc,
             "match_second": ncc2,
-            "matched": bool(ncc >= config.good_ncc),
+            "matched": bool(ncc >= config.good_ncc) if do_match else None,
         }
         raw_a, oa = _crop(la, pa, half)
         corners_a = _corners(oa, raw_a.shape, la[2])
@@ -263,6 +271,17 @@ def snr_pair(
                 "scaling": [scaling.offset, scaling.scale],
             }
             row[name]["qc"] = block_qc(raw, predict, scaling, prob=prob, config=qc_cfg)
+            if name != "a":  # b at a's voxel size on its own grid: mean-pool image, max-pool mask
+                f = tuple(int(x) for x in np.maximum(np.round(la[2] / vox).astype(int), 1))
+                cut = tuple(slice(0, (n // q) * q) for n, q in zip(raw.shape, f, strict=True))
+                shp = [(n // q, q) for n, q in zip(raw.shape, f, strict=True)]
+                pooled = raw[cut].reshape(shp[0] + shp[1] + shp[2]).mean((1, 3, 5))
+                mask = prob[cut].reshape(shp[0] + shp[1] + shp[2]).max((1, 3, 5))
+                at_a = score(pooled, mask, sc)
+                row[name]["at_a_voxel"] = {
+                    key: at_a.get(key)
+                    for key in ("axon_fraction", "signal", "background", "noise_sd", "snr")
+                } | {"voxel_um": (vox * np.array(f)).tolist()}
             np.savez_compressed(
                 out_dir / f"block{k:03d}_{name}.npz",
                 raw_mip=raw.max(0),
@@ -276,7 +295,7 @@ def snr_pair(
                 row.setdefault("_on_a", {})[name] = _to_a(
                     raw, ob, vox, lin_map, shift, oa, la[2], raw_a.shape
                 )
-            if det_a is None or name not in probs:
+            if not do_match or det_a is None or name not in probs:
                 continue
             # b's axons on a's grid: max-pool to a's voxel size first so thin axons survive
             size = np.maximum(np.round(la[2] / vox).astype(int), 1)

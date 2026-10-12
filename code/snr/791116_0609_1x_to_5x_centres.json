@@ -1,0 +1,37 @@
+{
+ "A": [
+  [
+   1.0,
+   0.0,
+   0.0
+  ],
+  [
+   0.0,
+   1.0,
+   0.0
+  ],
+  [
+   0.0,
+   0.0,
+   1.0
+  ]
+ ],
+ "t": [
+  21582.5,
+  -14755.676,
+  38230.112
+ ],
+ "match": false,
+ "formula": "p5 = p1 - c1 + c5 (physical um, z y x): 1x 06-09 tile_000001_ch_561 array centre on the 5x fusion array centre; same axis directions (SPIM_SRA), metadata voxel sizes, no registration",
+ "c1_um": [
+  -12289.0,
+  29957.28,
+  -12948.460000000003
+ ],
+ "c5_um": [
+  9293.5,
+  15201.604,
+  25281.652
+ ],
+ "expected_error_um": 2000
+}
