@@ -299,7 +299,10 @@ def finetune(
              {g: len(b) for g, b in groups.items()})  # fmt: skip
 
     model.to(device)
-    autocast = torch.bfloat16 if device.type == "cuda" else None
+    # bf16 only where the GPU has it (A10G yes; T4 emulates it, ~15x slower): else fp32
+    use_bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported(including_emulation=False)
+    autocast = torch.bfloat16 if use_bf16 else None
+    log.info("Training on %s, %s", device, "bf16 autocast" if use_bf16 else "fp32")
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.lr, weight_decay=config.weight_decay
     )
