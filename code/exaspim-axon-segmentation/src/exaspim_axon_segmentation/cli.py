@@ -477,8 +477,10 @@ def predict_image_cmd(
     level: Annotated[int, typer.Option(help="Level to segment")] = 0,
     mask_level: Annotated[int, typer.Option(help="Coarse level for the tissue/signal mask")] = 3,
     signal_sigmas: Annotated[float, typer.Option(help="Signal threshold (noise SDs)")] = 6.0,
-    tile_size: Annotated[int, typer.Option(help="Network input side")] = 256,
-    batch_size: Annotated[int, typer.Option()] = 2,
+    tile_size: Annotated[
+        int, typer.Option(help="Network input side (256 OOMs in fp32 on 24 GB)")
+    ] = 192,
+    batch_size: Annotated[int, typer.Option()] = 1,
     precision: Annotated[str, typer.Option(help="fp32 | bf16 | fp16 | auto")] = "bf16",
     check_tiles: Annotated[int, typer.Option(help="Compare precision vs fp32 on N tiles")] = 0,
     sample_skipped: Annotated[int, typer.Option(help="Also predict N skipped tiles")] = 0,
