@@ -64,11 +64,16 @@ set -euo pipefail
 #            code/train/degradation_1x.json added to every patch; starts from START_WEIGHTS
 #            (default the v2 weights); then scores it on 30 same-day 791116 1x/5x patch pairs
 #            (5x segmented with the start weights); results in /results/finetune1x/, /results/snr_pair/
+#   image [URL] [LO] [HI] [WEIGHTS] [PRECISION] [CHECK_TILES] [SAMPLE_SKIPPED] [MASK_LEVEL]
+#            segment the box LO..HI (x,y,z um) of any OME-Zarr image (e.g. a raw 1x tile) at level 0
+#            where it holds bright structure (tissue/signal mask from MASK_LEVEL, default 3);
+#            optional precision check vs fp32 and a sample of skipped tiles; results in
+#            /results/image/ (probability.zarr, report.json)
 #   slabs [WORKERS] [RELAXED]
 #            skeletonize every attached */probability.zarr (slabs from box runs, as data assets) as
 #            one volume, block by block; results in /results/slabs_skeleton/
 MODE="predict"
-if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|somata|expand|box|slabs|snr|snrpair)$ ]]; then MODE="$1"; shift; fi
+if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|somata|expand|box|slabs|snr|snrpair|image)$ ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -176,6 +181,23 @@ if [[ "${MODE}" == "finetune1x" ]]; then
         --raw-tiles s3://aind-open-data/exaSPIM_791116_2026-06-09_16-31-33/SPIM.ome.zarr \
         --stitching "${CODE_DIR}/snr/791116_5x_bigstitcher_affine.xml" --device cuda \
         2>&1 | tee "${RESULTS}/snr_pair.log"
+    exit 0
+fi
+
+if [[ "${MODE}" == "image" ]]; then
+    URL="${1:?OME-Zarr image URL required}"
+    LO="${2:?box corner x,y,z required}"
+    HI="${3:?box corner x,y,z required}"
+    WEIGHTS="${4:-/data/trailmap_finetune_v2/best.safetensors}"
+    PRECISION="${5:-bf16}"
+    CHECK="${6:-20}"
+    SAMPLE="${7:-50}"
+    MASK_LEVEL="${8:-3}"
+    echo "=== image · ${URL} · ${LO} .. ${HI} · ${PRECISION}"
+    exaspim-axon -v predict-image "${URL}" "${LO}" "${HI}" --out "${RESULTS}/image" \
+        --weights "${WEIGHTS}" --precision "${PRECISION}" --check-tiles "${CHECK}" \
+        --sample-skipped "${SAMPLE}" --mask-level "${MASK_LEVEL}" --device cuda \
+        2>&1 | tee "${RESULTS}/image.log"
     exit 0
 fi
 

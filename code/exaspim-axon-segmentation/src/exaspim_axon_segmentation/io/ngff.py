@@ -74,7 +74,12 @@ class NgffImage:
         if options is None and self.uri.startswith("s3://"):
             options = {"anon": anon}
         self._group = zarr.open_group(self.uri, mode="r", storage_options=options)
-        multiscale = self._group.attrs["multiscales"][0]
+        attrs = (
+            self._group.attrs
+        )  # OME-Zarr 0.4 keeps multiscales at the top level, 0.5 under "ome"
+        multiscale = (
+            attrs["multiscales"] if "multiscales" in attrs else attrs["ome"]["multiscales"]
+        )[0]
         axes = [axis["name"] for axis in multiscale["axes"]]
         if tuple(axes[-3:]) != SPATIAL_AXES:
             raise ValueError(f"{uri}: expected trailing axes {SPATIAL_AXES}, got {axes}")

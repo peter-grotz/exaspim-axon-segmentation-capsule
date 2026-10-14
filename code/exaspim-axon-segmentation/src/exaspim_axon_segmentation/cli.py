@@ -467,6 +467,43 @@ def predict_box_cmd(
     predict_box(asset, np.minimum(a, b), np.maximum(a, b), str(out), config, scaling=fixed)
 
 
+@app.command("predict-image")
+def predict_image_cmd(
+    url: Annotated[str, typer.Argument(help="Any OME-Zarr image, e.g. a raw 1x tile")],
+    lo: Annotated[str, typer.Argument(help="Box corner x,y,z (um)")],
+    hi: Annotated[str, typer.Argument(help="Opposite corner x,y,z (um)")],
+    out: Annotated[Path, typer.Option(help="Output directory")],
+    weights: Annotated[str, typer.Option(help="Fine-tuned .safetensors or registered name")],
+    level: Annotated[int, typer.Option(help="Level to segment")] = 0,
+    mask_level: Annotated[int, typer.Option(help="Coarse level for the tissue/signal mask")] = 3,
+    signal_sigmas: Annotated[float, typer.Option(help="Signal threshold (noise SDs)")] = 6.0,
+    tile_size: Annotated[int, typer.Option(help="Network input side")] = 256,
+    batch_size: Annotated[int, typer.Option()] = 2,
+    precision: Annotated[str, typer.Option(help="fp32 | bf16 | fp16 | auto")] = "bf16",
+    check_tiles: Annotated[int, typer.Option(help="Compare precision vs fp32 on N tiles")] = 0,
+    sample_skipped: Annotated[int, typer.Option(help="Also predict N skipped tiles")] = 0,
+    device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
+) -> None:
+    """Segment a box of any OME-Zarr image where it holds bright structure (no atlas needed)."""
+    import json as _json
+
+    import numpy as np
+
+    from exaspim_axon_segmentation.inference.image import predict_image
+
+    a = np.array([float(v) for v in lo.split(",")])[::-1]
+    b = np.array([float(v) for v in hi.split(",")])[::-1]
+    config = InferenceConfig(weights=weights, level=level, tile_size=tile_size,
+                             batch_size=batch_size, precision=precision, device=device,
+                             region_growth=0.0)  # fmt: skip
+    out.mkdir(parents=True, exist_ok=True)
+    report = predict_image(url, np.minimum(a, b), np.maximum(a, b), str(out / "probability.zarr"),
+                           config, mask_level=mask_level, signal_sigmas=signal_sigmas,
+                           check_tiles=check_tiles, sample_skipped=sample_skipped)  # fmt: skip
+    (out / "report.json").write_text(_json.dumps(report, indent=1, default=float))
+    log.info("Report: %s", report)
+
+
 @app.command("snr-blocks")
 def snr_blocks_cmd(
     url: Annotated[
