@@ -195,11 +195,15 @@ if [[ "${MODE}" == "image" ]]; then
     MASK_LEVEL="${8:-3}"
     echo "=== image · ${URL} · ${LO} .. ${HI} · ${PRECISION}"
     # options first, then "--": box corners may start with "-" (negative coordinates)
+    set +e
     exaspim-axon -v predict-image --out "${RESULTS}/image" \
         --weights "${WEIGHTS}" --precision "${PRECISION}" --check-tiles "${CHECK}" \
         --sample-skipped "${SAMPLE}" --mask-level "${MASK_LEVEL}" --device cuda \
         -- "${URL}" "${LO}" "${HI}" 2>&1 | tee "${RESULTS}/image.log"
-    exit "${PIPESTATUS[0]}"
+    status="${PIPESTATUS[0]}"
+    set -e
+    # a failing exit discards /results on Code Ocean (log included): record the status instead
+    echo "exit ${status}" > "${RESULTS}/image_status.txt"
     exit 0
 fi
 
