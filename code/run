@@ -194,10 +194,12 @@ if [[ "${MODE}" == "image" ]]; then
     SAMPLE="${7:-50}"
     MASK_LEVEL="${8:-3}"
     echo "=== image · ${URL} · ${LO} .. ${HI} · ${PRECISION}"
-    exaspim-axon -v predict-image "${URL}" "${LO}" "${HI}" --out "${RESULTS}/image" \
+    # options first, then "--": box corners may start with "-" (negative coordinates)
+    exaspim-axon -v predict-image --out "${RESULTS}/image" \
         --weights "${WEIGHTS}" --precision "${PRECISION}" --check-tiles "${CHECK}" \
         --sample-skipped "${SAMPLE}" --mask-level "${MASK_LEVEL}" --device cuda \
-        2>&1 | tee "${RESULTS}/image.log"
+        -- "${URL}" "${LO}" "${HI}" 2>&1 | tee "${RESULTS}/image.log"
+    exit "${PIPESTATUS[0]}"
     exit 0
 fi
 
