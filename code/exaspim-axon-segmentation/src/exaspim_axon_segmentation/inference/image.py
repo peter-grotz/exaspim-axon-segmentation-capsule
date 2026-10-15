@@ -103,12 +103,14 @@ def predict_image(
     signal_sigmas: float = 6.0,
     check_tiles: int = 0,
     sample_skipped: int = 0,
+    skip_no_signal: bool = True,
 ) -> dict:
     """Segment a physical box of an OME-Zarr image where it holds bright structure.
 
     ``check_tiles`` > 0 first compares ``config.precision`` against fp32 on that many tiles;
     ``sample_skipped`` > 0 afterwards predicts that many skipped tissue tiles to measure what the
-    skipping missed. Returns a report (also stored in the output's provenance).
+    skipping missed. ``skip_no_signal=False`` segments all tissue (only outside is skipped).
+    Returns a report (also stored in the output's provenance).
     """
     import torch
 
@@ -124,6 +126,9 @@ def predict_image(
     asset = ImageAsset(url)
     roi, stats = signal_roi(asset.fused, mask_level, lo_um, hi_um, signal_sigmas=signal_sigmas)
     tissue_roi = stats.pop("_tissue_roi")
+    if not skip_no_signal:  # segment all tissue; only cubes outside the sample are skipped
+        roi = tissue_roi
+    stats["skip_no_signal"] = skip_no_signal
     plan = plan_region(asset, roi, config)
     tissue_plan = plan_region(asset, tissue_roi, config)
     report = {

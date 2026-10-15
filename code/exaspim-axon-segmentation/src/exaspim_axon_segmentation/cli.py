@@ -484,6 +484,9 @@ def predict_image_cmd(
     precision: Annotated[str, typer.Option(help="fp32 | bf16 | fp16 | auto")] = "bf16",
     check_tiles: Annotated[int, typer.Option(help="Compare precision vs fp32 on N tiles")] = 0,
     sample_skipped: Annotated[int, typer.Option(help="Also predict N skipped tiles")] = 0,
+    skip_no_signal: Annotated[
+        bool, typer.Option(help="Skip tissue without bright structure (else all tissue)")
+    ] = True,
     device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
 ) -> None:
     """Segment a box of any OME-Zarr image where it holds bright structure (no atlas needed)."""
@@ -501,7 +504,8 @@ def predict_image_cmd(
     out.mkdir(parents=True, exist_ok=True)
     report = predict_image(url, np.minimum(a, b), np.maximum(a, b), str(out / "probability.zarr"),
                            config, mask_level=mask_level, signal_sigmas=signal_sigmas,
-                           check_tiles=check_tiles, sample_skipped=sample_skipped)  # fmt: skip
+                           check_tiles=check_tiles, sample_skipped=sample_skipped,
+                           skip_no_signal=skip_no_signal)  # fmt: skip
     (out / "report.json").write_text(_json.dumps(report, indent=1, default=float))
     log.info("Report: %s", report)
 

@@ -64,7 +64,7 @@ set -euo pipefail
 #            code/train/degradation_1x.json added to every patch; starts from START_WEIGHTS
 #            (default the v2 weights); then scores it on 30 same-day 791116 1x/5x patch pairs
 #            (5x segmented with the start weights); results in /results/finetune1x/, /results/snr_pair/
-#   image [URL] [LO] [HI] [WEIGHTS] [PRECISION] [CHECK_TILES] [SAMPLE_SKIPPED] [MASK_LEVEL]
+#   image [URL] [LO] [HI] [WEIGHTS] [PRECISION] [CHECK_TILES] [SAMPLE_SKIPPED] [MASK_LEVEL] [SKIP]
 #            segment the box LO..HI (x,y,z um) of any OME-Zarr image (e.g. a raw 1x tile) at level 0
 #            where it holds bright structure (tissue/signal mask from MASK_LEVEL, default 3);
 #            optional precision check vs fp32 and a sample of skipped tiles; results in
@@ -193,12 +193,14 @@ if [[ "${MODE}" == "image" ]]; then
     CHECK="${6:-20}"
     SAMPLE="${7:-50}"
     MASK_LEVEL="${8:-3}"
+    SKIP="${9:-yes}"
+    skip=(--skip-no-signal); [[ "${SKIP}" == "no" ]] && skip=(--no-skip-no-signal)
     echo "=== image · ${URL} · ${LO} .. ${HI} · ${PRECISION}"
     # options first, then "--": box corners may start with "-" (negative coordinates)
     set +e
     exaspim-axon -v predict-image --out "${RESULTS}/image" \
         --weights "${WEIGHTS}" --precision "${PRECISION}" --check-tiles "${CHECK}" \
-        --sample-skipped "${SAMPLE}" --mask-level "${MASK_LEVEL}" --device cuda \
+        --sample-skipped "${SAMPLE}" --mask-level "${MASK_LEVEL}" "${skip[@]}" --device cuda \
         -- "${URL}" "${LO}" "${HI}" 2>&1 | tee "${RESULTS}/image.log"
     status="${PIPESTATUS[0]}"
     set -e
