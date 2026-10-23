@@ -69,11 +69,15 @@ set -euo pipefail
 #            where it holds bright structure (tissue/signal mask from MASK_LEVEL, default 3);
 #            optional precision check vs fp32 and a sample of skipped tiles; results in
 #            /results/image/ (probability.zarr, report.json)
+#   snrtiles [ROOT] [N_BLOCKS] [WEIGHTS] [CHANNEL] [PRECISION] [MASK_ROOT]
+#            axon SNR in N_BLOCKS (default 40) non-overlapping tissue blocks (>= 90% tissue, built-in
+#            mask) of every tile in ROOT (a raw SPIM container), at level 2; results in
+#            /results/snr_tiles/<tile>/snr_blocks.json
 #   slabs [WORKERS] [RELAXED]
 #            skeletonize every attached */probability.zarr (slabs from box runs, as data assets) as
 #            one volume, block by block; results in /results/slabs_skeleton/
 MODE="predict"
-if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|somata|expand|box|slabs|snr|snrpair|image)$ ]]; then MODE="$1"; shift; fi
+if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|somata|expand|box|slabs|snr|snrpair|image|snrtiles)$ ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -181,6 +185,26 @@ if [[ "${MODE}" == "finetune1x" ]]; then
         --raw-tiles s3://aind-open-data/exaSPIM_791116_2026-06-09_16-31-33/SPIM.ome.zarr \
         --stitching "${CODE_DIR}/snr/791116_5x_bigstitcher_affine.xml" --device cuda \
         2>&1 | tee "${RESULTS}/snr_pair.log"
+    exit 0
+fi
+
+if [[ "${MODE}" == "snrtiles" ]]; then
+    ROOT="${1:?tile container required}"
+    N="${2:-40}"
+    WEIGHTS="${3:-/data/trailmap_finetune_v2/best.safetensors}"
+    CHANNEL="${4:-561}"
+    PRECISION="${5:-bf16}"
+    MASK_ROOT="${6:-none}"
+    mask=(); [[ "${MASK_ROOT}" != "none" ]] && mask=(--mask-root "${MASK_ROOT}")
+    echo "=== snrtiles · ${ROOT} · ${N} blocks per tile · ch ${CHANNEL} · ${PRECISION}"
+    set +e
+    exaspim-axon -v snr-tiles --out "${RESULTS}/snr_tiles" --weights "${WEIGHTS}" --n-blocks "${N}" \
+        --channel "${CHANNEL}" --precision "${PRECISION}" "${mask[@]}" --device cuda -- "${ROOT}" \
+        2>&1 | tee "${RESULTS}/snr_tiles.log"
+    status="${PIPESTATUS[0]}"
+    set -e
+    # a failing exit discards /results on Code Ocean (log included): record the status instead
+    echo "exit ${status}" > "${RESULTS}/snr_tiles_status.txt"
     exit 0
 fi
 

@@ -510,6 +510,102 @@ def predict_image_cmd(
     log.info("Report: %s", report)
 
 
+@app.command("snr-tiles")
+def snr_tiles_cmd(
+    root: Annotated[str, typer.Argument(help="Raw tile container, e.g. s3://.../SPIM/")],
+    out: Annotated[Path, typer.Option(help="Output directory (one folder per tile)")],
+    weights: Annotated[str, typer.Option(help="Fine-tuned .safetensors or registered name")],
+    channel: Annotated[str, typer.Option(help="Channel suffix of the tiles")] = "561",
+    n_blocks: Annotated[int, typer.Option(help="Tissue blocks per tile")] = 40,
+    min_tissue: Annotated[float, typer.Option(help="Least tissue fraction of a block")] = 0.9,
+    level: Annotated[int, typer.Option(help="Level to segment (5x: 2 = training grid)")] = 2,
+    block_um: Annotated[str, typer.Option(help="Block size z,y,x (um)")] = "1280,1440,1440",
+    precision: Annotated[str, typer.Option(help="auto | fp32 | bf16")] = "bf16",
+    tile: Annotated[int, typer.Option(help="Network input side")] = 192,
+    save_mips: Annotated[bool, typer.Option(help="Write per-block preview MIPs")] = True,
+    mask_root: Annotated[
+        str | None,
+        typer.Option(help="Flat-field brain masks (.../flatfield_correction/mask/SPIM.ome.zarr)"),
+    ] = None,
+    device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
+) -> None:
+    """Axon SNR in ``n_blocks`` non-overlapping tissue blocks of every tile of an acquisition."""
+    import json as _json
+    from concurrent.futures import ThreadPoolExecutor
+
+    import fsspec
+    import numpy as np
+
+    from exaspim_axon_segmentation.qc.tile_mask import blocks_from_fraction, mask_fraction
+    from exaspim_axon_segmentation.snr import SnrConfig, open_ome, snr_blocks, tissue_block_centres
+
+    fs = (
+        fsspec.filesystem("s3", anon=True)
+        if root.startswith("s3://")
+        else fsspec.filesystem("file")
+    )
+    base = root.rstrip("/")
+    names = sorted(p.rstrip("/").split("/")[-1] for p in fs.ls(base.removeprefix("s3://"))
+                   if f"_ch_{channel}" in p.rsplit("/", 1)[-1])  # fmt: skip
+    log.info("%d tiles in %s", len(names), root)
+    size = tuple(float(v) for v in block_um.split(","))
+    cfg = SnrConfig(block_um=size, precision=precision, tile=tile, save_mips=save_mips,
+                    qc_normalization=False)  # fmt: skip
+    stem = lambda name: name.split(".")[0]  # noqa: E731
+    masks = {}
+    if mask_root:
+        mbase = mask_root.rstrip("/")
+        for p in fs.ls(mbase.removeprefix("s3://")):
+            masks[stem(p.rstrip("/").split("/")[-1])] = "s3://" + p.rstrip("/")
+        log.info("%d tile masks in %s", len(masks), mask_root)
+    bin_ = 32
+
+    def prepare(name):
+        """Block centres for one tile: from its brain mask, else from bright structure."""
+        url = f"{base}/{name}"
+        if stem(name) in masks:
+            frac, st = mask_fraction(masks[stem(name)], bin=bin_)
+            _, _, sc0, tr0 = open_ome(url, 0)
+            bins = np.maximum(np.round(np.asarray(size) / (sc0 * bin_)).astype(int), 1)
+            starts, fr = blocks_from_fraction(frac, bins, n_blocks, min_tissue=min_tissue,
+                                              seed=names.index(name))  # fmt: skip
+            centres = tr0 + ((starts + bins / 2) * bin_) * sc0
+            return centres, fr, {"selection": "brain mask", "mask": masks[stem(name)]} | st
+        centres, fr = tissue_block_centres(url, n_blocks, size, seed=names.index(name),
+                                           min_tissue=min_tissue)  # fmt: skip
+        return centres, fr, {"selection": "intensity (no brain mask for this tile)"}
+
+    todo = []
+    for name in names:
+        done = out / stem(name) / "snr_blocks.json"
+        if done.exists() and _json.loads(done.read_text()).get("complete"):
+            log.info("%s: done, skipping", name)
+            continue
+        todo.append(name)
+    with ThreadPoolExecutor(1) as pool:  # the next tile's mask is read while this one predicts
+        futures = {todo[0]: pool.submit(prepare, todo[0])} if todo else {}
+        for i, name in enumerate(todo):
+            if i + 1 < len(todo):
+                futures[todo[i + 1]] = pool.submit(prepare, todo[i + 1])
+            url = f"{base}/{name}"
+            tdir = out / stem(name)
+            done = tdir / "snr_blocks.json"
+            try:
+                centres, frac, sel = futures.pop(name).result()
+            except Exception as error:
+                log.warning("%s: block selection failed (%s); skipped", name, error)
+                continue
+            tdir.mkdir(parents=True, exist_ok=True)
+            meta = {"tile": name, "url": url, "n_requested": n_blocks,
+                    "n_tissue_blocks": len(centres),
+                    "tissue_fraction": np.round(frac, 3).tolist()} | sel  # fmt: skip
+            if len(centres):
+                snr_blocks(url, centres, tdir, weights, cfg, level=level, device=device)
+            summary = _json.loads(done.read_text()) if done.exists() else {"blocks": []}
+            done.write_text(_json.dumps(summary | meta | {"complete": True}, indent=1))
+            log.info("%s: %d tissue blocks scored (%s)", name, len(centres), sel["selection"])
+
+
 @app.command("snr-blocks")
 def snr_blocks_cmd(
     url: Annotated[

@@ -47,6 +47,10 @@ class SnrConfig:
     outside_pct: float = 10.0
     tile: int = 160
     qc: bool = True  # false-detection checks per block (qc/detection_qc.py)
+    precision: str = "auto"  # "bf16" on GPUs that have it (checked against fp32: axon Dice 0.99)
+    shell_vox: int = 6  # local background: a shell this thick around the (guarded) detections
+    save_mips: bool = True
+    qc_normalization: bool = True  # the QC's shared-scaling check: one more prediction per block
 
 
 def _store(url: str):
@@ -95,6 +99,52 @@ def random_centres(url: str, n: int, seed: int, overview_level: int | None = Non
     return pick * scale + translation + scale / 2
 
 
+def tissue_block_centres(
+    url: str,
+    n: int,
+    block_um,
+    seed: int = 0,
+    *,
+    min_tissue: float = 0.9,
+    mask_um: float = 16.0,
+) -> tuple[NDArray, NDArray]:
+    """Up to ``n`` non-overlapping blocks lying (>= ``min_tissue``) in tissue, physical centres.
+
+    Tissue is the built-in mask of :mod:`exaspim_axon_segmentation.inference.image` (smoothed
+    intensity above the out-of-sample background) on the first level with y/x voxels of at least
+    ``mask_um``. Returns the centres (z, y, x µm) and each block's tissue fraction.
+    """
+    from scipy.ndimage import gaussian_filter, uniform_filter
+
+    root = zarr.open_group(_store(url), mode="r")
+    n_levels = len(_multiscales(root)[0]["datasets"])
+    level = next((lv for lv in range(n_levels) if open_ome(url, lv)[2][2] >= mask_um), n_levels - 1)
+    array, lead, scale, translation = open_ome(url, level)
+    v = _read(array, lead, (0, 0, 0), array.shape[lead:])
+    smooth = gaussian_filter(v, 1.0)
+    outside = np.percentile(smooth, 5)
+    mad = 1.4826 * np.median(np.abs(smooth - np.median(smooth)))
+    tissue = (smooth > outside + max(3.0 * mad, 1.0)).astype(np.float32)
+    size = np.maximum(np.round(np.asarray(block_um) / scale).astype(int), 1)
+    frac = uniform_filter(tissue, size=tuple(size), mode="constant")
+    half = size // 2
+    valid = np.zeros(frac.shape, bool)
+    inner = tuple(slice(h, s - (k - h)) for h, k, s in zip(half, size, frac.shape, strict=True))
+    valid[inner] = frac[inner] >= min_tissue
+    cand = np.argwhere(valid)
+    rng = np.random.default_rng(seed)
+    chosen: list[NDArray] = []
+    for c in cand[rng.permutation(len(cand))]:
+        if all(np.any(np.abs(c - q) >= size) for q in chosen):  # boxes do not intersect
+            chosen.append(c)
+            if len(chosen) == n:
+                break
+    idx = np.array(chosen, int).reshape(-1, 3)
+    log.info("Tissue blocks on level %d (%s um): %.1f%% tissue, %d candidates, %d chosen",
+             level, scale.round(1).tolist(), 100 * tissue.mean(), len(cand), len(idx))  # fmt: skip
+    return idx * scale + translation, frac[tuple(idx.T)] if len(idx) else np.zeros(0)
+
+
 def _predict(predictor, vol: NDArray[np.float32], tile: int) -> NDArray[np.float32]:
     from exaspim_axon_segmentation.model.unet import CONTEXT
 
@@ -126,8 +176,25 @@ def score(raw: NDArray[np.float32], prob: NDArray[np.float32], config: SnrConfig
     sm, bm = float(np.median(raw[axon])), float(np.median(raw[bg]))
     sdm = float(1.4826 * np.median(np.abs(raw[bg] - bm)))
     step = int(np.gcd.reduce(np.unique(raw[::4, ::4, ::4].astype(np.int64))[:5000]))
-    return out | {"signal": s, "background": b, "noise_sd": sd, "snr": (s - b) / max(sd, 1e-6),
-                  "median_snr": (sm - bm) / max(sdm, 1e-6), "quantization_step": step}  # fmt: skip
+    # local background: a thin shell around the detections, so gradients/stripes far away do not
+    # count as noise
+    shell = binary_dilation(guard, iterations=config.shell_vox) & ~guard
+    shell &= raw > np.percentile(raw, config.outside_pct)
+    local = {"local_background": None, "local_noise_sd": None, "local_snr": None}
+    if shell.sum() >= 1000:
+        lv = raw[shell].astype(np.float64)
+        for _ in range(5):
+            m, d = lv.mean(), lv.std()
+            lv = lv[np.abs(lv - m) <= 3 * d]
+        lb, lsd = float(lv.mean()), float(lv.std())
+        local = {
+            "local_background": lb,
+            "local_noise_sd": lsd,
+            "local_snr": (s - lb) / max(lsd, 1e-6),
+        }
+    whole = {"signal": s, "background": b, "noise_sd": sd, "snr": (s - b) / max(sd, 1e-6),
+             "median_snr": (sm - bm) / max(sdm, 1e-6), "quantization_step": step}  # fmt: skip
+    return out | whole | local
 
 
 def snr_blocks(
@@ -157,25 +224,25 @@ def snr_blocks(
     shape = np.asarray(array.shape[lead:])
     norm = InferenceConfig(weights=weights).normalization
     dev = resolve_device(device)
-    precision = resolve_precision("auto") if dev.type == "cuda" else torch.float32
+    precision = resolve_precision(config.precision) if dev.type == "cuda" else torch.float32
     predictor = TilePredictor(load_model(weights), dev, precision)
     from exaspim_axon_segmentation.inference.normalize import scaling_from_samples
     from exaspim_axon_segmentation.qc.detection_qc import DetectionQcConfig, block_qc
 
     half = np.asarray(config.block_um) / 2
-    boxes, raws = [], []
+    boxes = []
     for centre in np.atleast_2d(centres_um):
         lo = np.clip(np.floor((centre - half - translation) / scale).astype(int), 0, shape)
         hi = np.clip(np.ceil((centre + half - translation) / scale).astype(int), 0, shape)
         boxes.append((lo, hi))
-        raws.append(_read(array, lead, lo, hi))
-    # one acquisition-wide normalization, from samples pooled over all blocks
-    rng = np.random.default_rng(0)
-    pooled = np.concatenate(
-        [r.ravel()[rng.choice(r.size, min(r.size, 200_000), replace=False)] for r in raws]
-    )
+    # one acquisition-wide normalization, from central 64^3 sub-crops pooled over all blocks
+    # (blocks are then read one at a time, so memory stays at one block)
+    pooled = []
+    for lo, hi in boxes:
+        c = (lo + hi) // 2
+        pooled.append(_read(array, lead, np.maximum(c - 32, lo), np.minimum(c + 32, hi)).ravel())
     try:
-        shared = scaling_from_samples(pooled, norm)
+        shared = scaling_from_samples(np.concatenate(pooled), norm) if pooled else None
     except ValueError:
         shared = None
     log.info("shared scaling: %s", None if shared is None else (shared.offset, shared.scale))
@@ -183,7 +250,8 @@ def snr_blocks(
     rows = []
     for k, centre in enumerate(np.atleast_2d(centres_um)):
         t0 = time.time()
-        (lo, hi), raw = boxes[k], raws[k]
+        lo, hi = boxes[k]
+        raw = _read(array, lead, lo, hi)
         row = {"block": k, "centre_um": np.round(centre, 1).tolist(), "lo_vox": lo.tolist(),
                "shape": list(raw.shape), "voxel_um": scale.tolist()}  # fmt: skip
         variants = {"native": (raw, scale)}
@@ -213,12 +281,16 @@ def snr_blocks(
                     vol,
                     lambda v: _predict(predictor, v, config.tile),
                     scaling,
-                    shared_scaling=shared,
+                    shared_scaling=shared if config.qc_normalization else None,
                     prob=prob,
                     config=qc_cfg,
                 )
-            np.savez_compressed(out_dir / f"block{k:03d}_{name}.npz", raw_mip=vol.max(0),
-                                prob_mip=np.round(prob.max(0) * 255).astype(np.uint8))  # fmt: skip
+            if config.save_mips:
+                mips = {
+                    "raw_mip": vol.max(0),
+                    "prob_mip": np.round(prob.max(0) * 255).astype(np.uint8),
+                }
+                np.savez_compressed(out_dir / f"block{k:03d}_{name}.npz", **mips)
         row["seconds"] = round(time.time() - t0, 1)
         rows.append(row)
         log.info(
