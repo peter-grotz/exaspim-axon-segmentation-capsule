@@ -527,6 +527,7 @@ def snr_tiles_cmd(
         str | None,
         typer.Option(help="Flat-field brain masks (.../flatfield_correction/mask/SPIM.ome.zarr)"),
     ] = None,
+    max_tiles: Annotated[int, typer.Option(help="Only the first N tiles (pilot); 0 = all")] = 0,
     device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
 ) -> None:
     """Axon SNR in ``n_blocks`` non-overlapping tissue blocks of every tile of an acquisition."""
@@ -547,6 +548,8 @@ def snr_tiles_cmd(
     base = root.rstrip("/")
     names = sorted(p.rstrip("/").split("/")[-1] for p in fs.ls(base.removeprefix("s3://"))
                    if f"_ch_{channel}" in p.rsplit("/", 1)[-1])  # fmt: skip
+    if max_tiles:
+        names = names[:max_tiles]
     log.info("%d tiles in %s", len(names), root)
     size = tuple(float(v) for v in block_um.split(","))
     cfg = SnrConfig(block_um=size, precision=precision, tile=tile, save_mips=save_mips,

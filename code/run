@@ -69,7 +69,7 @@ set -euo pipefail
 #            where it holds bright structure (tissue/signal mask from MASK_LEVEL, default 3);
 #            optional precision check vs fp32 and a sample of skipped tiles; results in
 #            /results/image/ (probability.zarr, report.json)
-#   snrtiles [ROOT] [N_BLOCKS] [WEIGHTS] [CHANNEL] [PRECISION] [MASK_ROOT]
+#   snrtiles [ROOT] [N_BLOCKS] [WEIGHTS] [CHANNEL] [PRECISION] [MASK_ROOT] [MAX_TILES]
 #            axon SNR in N_BLOCKS (default 40) non-overlapping tissue blocks (>= 90% tissue, built-in
 #            mask) of every tile in ROOT (a raw SPIM container), at level 2; results in
 #            /results/snr_tiles/<tile>/snr_blocks.json
@@ -195,11 +195,12 @@ if [[ "${MODE}" == "snrtiles" ]]; then
     CHANNEL="${4:-561}"
     PRECISION="${5:-bf16}"
     MASK_ROOT="${6:-none}"
+    MAX_TILES="${7:-0}"
     mask=(); [[ "${MASK_ROOT}" != "none" ]] && mask=(--mask-root "${MASK_ROOT}")
     echo "=== snrtiles · ${ROOT} · ${N} blocks per tile · ch ${CHANNEL} · ${PRECISION}"
     set +e
     exaspim-axon -v snr-tiles --out "${RESULTS}/snr_tiles" --weights "${WEIGHTS}" --n-blocks "${N}" \
-        --channel "${CHANNEL}" --precision "${PRECISION}" "${mask[@]}" --device cuda -- "${ROOT}" \
+        --channel "${CHANNEL}" --precision "${PRECISION}" "${mask[@]}" --max-tiles "${MAX_TILES}" --device cuda -- "${ROOT}" \
         2>&1 | tee "${RESULTS}/snr_tiles.log"
     status="${PIPESTATUS[0]}"
     set -e
