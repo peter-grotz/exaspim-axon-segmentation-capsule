@@ -538,7 +538,7 @@ def snr_tiles_cmd(
     import numpy as np
 
     from exaspim_axon_segmentation.qc.tile_mask import blocks_from_fraction, mask_fraction
-    from exaspim_axon_segmentation.snr import SnrConfig, open_ome, snr_blocks, tissue_block_centres
+    from exaspim_axon_segmentation.snr import SnrConfig, open_ome, snr_blocks
 
     fs = (
         fsspec.filesystem("s3", anon=True)
@@ -574,9 +574,15 @@ def snr_tiles_cmd(
                                               seed=names.index(name))  # fmt: skip
             centres = tr0 + ((starts + bins / 2) * bin_) * sc0
             return centres, fr, {"selection": "brain mask", "mask": masks[stem(name)]} | st
-        centres, fr = tissue_block_centres(url, n_blocks, size, seed=names.index(name),
-                                           min_tissue=min_tissue)  # fmt: skip
-        return centres, fr, {"selection": "intensity (no brain mask for this tile)"}
+        # no brain mask: random non-overlapping blocks anywhere in the tile, flagged with "*"
+        _, _, sc0, tr0 = open_ome(url, 0)
+        shape0 = np.asarray(open_ome(url, 0)[0].shape[-3:])
+        bins = np.maximum(np.round(np.asarray(size) / (sc0 * bin_)).astype(int), 1)
+        frac = np.ones(tuple(-(-shape0 // bin_)), np.float32)
+        starts, fr = blocks_from_fraction(frac, bins, n_blocks, min_tissue=1.0,
+                                          seed=names.index(name))  # fmt: skip
+        centres = tr0 + ((starts + bins / 2) * bin_) * sc0
+        return centres, np.full(len(centres), np.nan), {"selection": "unmasked*"}
 
     todo = []
     for name in names:
