@@ -160,11 +160,23 @@ def _predict(predictor, vol: NDArray[np.float32], tile: int) -> NDArray[np.float
     return prob[: vol.shape[0], : vol.shape[1], : vol.shape[2]]
 
 
+def _sub(values: NDArray, n: int = 2_000_000) -> NDArray:
+    """Return a fixed random subset of at most ``n`` values, for percentiles and medians."""
+    flat = values.ravel()
+    if flat.size <= n:
+        return flat
+    return flat[np.random.default_rng(0).integers(0, flat.size, n)]
+
+
 def score(raw: NDArray[np.float32], prob: NDArray[np.float32], config: SnrConfig) -> dict:
-    """Signal, background, noise and SNR of the detected axons in one block."""
+    """Signal, background, noise and SNR of the detected axons in one block.
+
+    Means and SDs use every voxel; percentiles and medians use a 2 M-voxel random subset.
+    """
     axon = prob >= config.axon_p
     guard = binary_dilation(axon, iterations=config.guard_vox) if axon.any() else axon
-    bg = ~guard & (raw > np.percentile(raw, config.outside_pct))
+    outside = np.percentile(_sub(raw), config.outside_pct)
+    bg = ~guard & (raw > outside)
     out = {"axon_voxels": int(axon.sum()), "axon_fraction": float(axon.mean())}
     if axon.sum() < 50 or bg.sum() < 1000:
         return out | {"signal": None, "background": None, "noise_sd": None, "snr": None}
@@ -173,13 +185,14 @@ def score(raw: NDArray[np.float32], prob: NDArray[np.float32], config: SnrConfig
         m, sd = values.mean(), values.std()
         values = values[np.abs(values - m) <= 3 * sd]
     s, b, sd = float(raw[axon].mean()), float(values.mean()), float(values.std())
-    sm, bm = float(np.median(raw[axon])), float(np.median(raw[bg]))
-    sdm = float(1.4826 * np.median(np.abs(raw[bg] - bm)))
+    bgv = _sub(raw[bg])
+    sm, bm = float(np.median(_sub(raw[axon]))), float(np.median(bgv))
+    sdm = float(1.4826 * np.median(np.abs(bgv - bm)))
     step = int(np.gcd.reduce(np.unique(raw[::4, ::4, ::4].astype(np.int64))[:5000]))
     # local background: a thin shell around the detections, so gradients/stripes far away do not
     # count as noise
     shell = binary_dilation(guard, iterations=config.shell_vox) & ~guard
-    shell &= raw > np.percentile(raw, config.outside_pct)
+    shell &= raw > outside
     local = {"local_background": None, "local_noise_sd": None, "local_snr": None}
     if shell.sum() >= 1000:
         lv = raw[shell].astype(np.float64)
@@ -248,10 +261,16 @@ def snr_blocks(
     log.info("shared scaling: %s", None if shared is None else (shared.offset, shared.scale))
     qc_cfg = DetectionQcConfig()
     rows = []
+    from concurrent.futures import ThreadPoolExecutor
+
+    reader = ThreadPoolExecutor(1)  # the next block is read while this one is processed
+    nxt = reader.submit(_read, array, lead, *boxes[0]) if boxes else None
     for k, centre in enumerate(np.atleast_2d(centres_um)):
         t0 = time.time()
         lo, hi = boxes[k]
-        raw = _read(array, lead, lo, hi)
+        raw = nxt.result()
+        if k + 1 < len(boxes):
+            nxt = reader.submit(_read, array, lead, *boxes[k + 1])
         row = {"block": k, "centre_um": np.round(centre, 1).tolist(), "lo_vox": lo.tolist(),
                "shape": list(raw.shape), "voxel_um": scale.tolist()}  # fmt: skip
         variants = {"native": (raw, scale)}
@@ -300,4 +319,5 @@ def snr_blocks(
         )
         summary = {"url": url, "level": level, "config": asdict(config), "blocks": rows}
         (out_dir / "snr_blocks.json").write_text(json.dumps(summary, indent=1))
+    reader.shutdown()
     return rows

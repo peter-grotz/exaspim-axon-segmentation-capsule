@@ -66,7 +66,8 @@ def _clipped(values: NDArray) -> tuple[float, float]:
 def contrast(raw: NDArray, axon: NDArray[np.bool_], config: DetectionQcConfig) -> dict:
     """Mean signal of the detections against the sigma-clipped background around them."""
     guard = binary_dilation(axon, iterations=config.guard_vox) if axon.any() else axon
-    bg = ~guard & (raw > np.percentile(raw, config.outside_pct))
+    sub = raw.ravel()[:: max(1, raw.size // 2_000_000)]
+    bg = ~guard & (raw > np.percentile(sub, config.outside_pct))
     if axon.sum() < 50 or bg.sum() < 1000:
         return {"signal": None, "background": None, "noise_sd": None, "snr": None}
     b, sd = _clipped(raw[bg])
@@ -98,7 +99,8 @@ def block_qc(
 
     # noise control: the block's own background statistics, no structure
     guard = binary_dilation(axon, iterations=config.guard_vox) if axon.any() else axon
-    bg = ~guard & (raw > np.percentile(raw, config.outside_pct))
+    sub = raw.ravel()[:: max(1, raw.size // 2_000_000)]
+    bg = ~guard & (raw > np.percentile(sub, config.outside_pct))
     mean, sd = _clipped(raw[bg]) if bg.sum() > 1000 else (float(raw.mean()), float(raw.std()))
     side = [min(config.control_vox, s) for s in raw.shape]
     noise = np.random.default_rng(config.seed).normal(mean, max(sd, 1e-6), side).astype(np.float32)
