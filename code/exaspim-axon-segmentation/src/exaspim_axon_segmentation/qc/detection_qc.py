@@ -55,7 +55,61 @@ def signal_present(raw: NDArray, config: DetectionQcConfig | None = None) -> flo
     return float((np.percentile(v, 99.9) - med) / noise)
 
 
+def sparse_dilation(mask: NDArray[np.bool_], iterations: int, cell: int = 64) -> NDArray[np.bool_]:
+    """``binary_dilation(mask, iterations=...)``, computed only in cells near True voxels.
+
+    Same voxels as the full dilation (each iteration grows by one face neighbour, so a voxel is set
+    when a True voxel lies within ``iterations`` steps); cells with nothing within reach are
+    skipped, which makes sparse masks (axons fill < 1% of a block) much cheaper.
+    """
+    if iterations < 1 or not mask.any():
+        return mask.copy()
+    shape = np.asarray(mask.shape)
+    grid = -(-shape // cell)
+    pad = [(0, g * cell - n) for g, n in zip(grid, shape, strict=True)]
+    occupied = np.pad(mask, pad).reshape(grid[0], cell, grid[1], cell, grid[2], cell).any((1, 3, 5))
+    reach = -(-iterations // cell)  # cells a detection can grow into
+    near = binary_dilation(occupied, np.ones((3, 3, 3), bool), iterations=reach)
+    out = np.zeros_like(mask)
+    for c in np.argwhere(near):
+        lo, hi = c * cell, np.minimum((c + 1) * cell, shape)
+        elo, ehi = np.maximum(lo - iterations, 0), np.minimum(hi + iterations, shape)
+        sub = binary_dilation(
+            mask[elo[0] : ehi[0], elo[1] : ehi[1], elo[2] : ehi[2]], iterations=iterations
+        )
+        a, b = lo - elo, hi - elo
+        out[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]] = sub[
+            a[0] : b[0], a[1] : b[1], a[2] : b[2]
+        ]
+    return out
+
+
 def _clipped(values: NDArray) -> tuple[float, float]:
+    """Mean and SD after 5 rounds of 3-SD clipping.
+
+    Integer values (raw camera counts) are clipped on their histogram, which gives the same result
+    as clipping the values themselves, in milliseconds.
+    """
+    values = np.asarray(values)
+    if (
+        values.size
+        and values.min() >= 0
+        and values.max() < 2**20
+        and np.all(values == np.floor(values))
+    ):
+        counts = np.bincount(values.astype(np.int64)).astype(np.float64)
+        v = np.arange(counts.size, dtype=np.float64)
+        keep = counts > 0
+        for _ in range(5):
+            c, x = counts[keep], v[keep]
+            n = c.sum()
+            m = (c * x).sum() / n
+            sd = np.sqrt((c * (x - m) ** 2).sum() / n)
+            keep &= np.abs(v - m) <= 3 * sd
+        c, x = counts[keep], v[keep]
+        n = c.sum()
+        m = (c * x).sum() / n
+        return float(m), float(np.sqrt((c * (x - m) ** 2).sum() / n))
     values = values.astype(np.float64)
     for _ in range(5):
         m, sd = values.mean(), values.std()
@@ -63,14 +117,34 @@ def _clipped(values: NDArray) -> tuple[float, float]:
     return float(values.mean()), float(values.std())
 
 
-def contrast(raw: NDArray, axon: NDArray[np.bool_], config: DetectionQcConfig) -> dict:
-    """Mean signal of the detections against the sigma-clipped background around them."""
-    guard = binary_dilation(axon, iterations=config.guard_vox) if axon.any() else axon
+def _background(raw, axon, config, guard=None):
+    """Background voxels (outside the guarded detections and the darkest voxels) and their count."""
+    if guard is None:
+        guard = sparse_dilation(axon, config.guard_vox)
     sub = raw.ravel()[:: max(1, raw.size // 2_000_000)]
     bg = ~guard & (raw > np.percentile(sub, config.outside_pct))
-    if axon.sum() < 50 or bg.sum() < 1000:
+    return bg, int(bg.sum())
+
+
+def contrast(
+    raw: NDArray,
+    axon: NDArray[np.bool_],
+    config: DetectionQcConfig,
+    *,
+    guard: NDArray[np.bool_] | None = None,
+    _stats: tuple | None = None,
+) -> dict:
+    """Mean signal of the detections against the sigma-clipped background around them.
+
+    ``guard`` (the detections dilated by ``config.guard_vox``) is reused when given.
+    """
+    if _stats is None:
+        bg, n_bg = _background(raw, axon, config, guard)
+        _stats = (_clipped(raw[bg]) if n_bg > 1000 else None, n_bg)
+    clipped, n_bg = _stats
+    if axon.sum() < 50 or n_bg < 1000:
         return {"signal": None, "background": None, "noise_sd": None, "snr": None}
-    b, sd = _clipped(raw[bg])
+    b, sd = clipped
     s = float(raw[axon].mean())
     return {"signal": s, "background": b, "noise_sd": sd, "snr": (s - b) / max(sd, 1e-6)}
 
@@ -83,8 +157,13 @@ def block_qc(
     shared_scaling: Callable[[NDArray], NDArray[np.float32]] | None = None,
     prob: NDArray[np.float32] | None = None,
     config: DetectionQcConfig = DetectionQcConfig(),  # noqa: B008
+    guard: NDArray[np.bool_] | None = None,
 ) -> dict:
-    """Run the four checks on one raw block; ``prob`` (with ``scaling``) is reused if given."""
+    """Run the four checks on one raw block; ``prob`` (with ``scaling``) is reused if given.
+
+    ``guard``, the detections (p >= ``config.axon_p``) dilated by ``config.guard_vox``, is reused
+    if given.
+    """
     out: dict = {"signal_present": signal_present(raw, config)}
     if out["signal_present"] < config.signal_min:
         return out | {"failed": ["signal_present"], "verdict": "no_signal"}
@@ -92,16 +171,18 @@ def block_qc(
         prob = predict(scaling(raw))
     axon = prob >= config.axon_p
     rate = float(axon.mean())
-    out |= {"detected_fraction": rate} | contrast(raw, axon, config)
+    if guard is None:
+        guard = sparse_dilation(axon, config.guard_vox)
+    # background shared by the contrast check and the noise control
+    bg, n_bg = _background(raw, axon, config, guard)
+    clipped = _clipped(raw[bg]) if n_bg > 1000 else None
+    out |= {"detected_fraction": rate} | contrast(raw, axon, config, _stats=(clipped, n_bg))
     failed = []
     if out["snr"] is None or out["snr"] < config.snr_min:
         failed.append("contrast")
 
     # noise control: the block's own background statistics, no structure
-    guard = binary_dilation(axon, iterations=config.guard_vox) if axon.any() else axon
-    sub = raw.ravel()[:: max(1, raw.size // 2_000_000)]
-    bg = ~guard & (raw > np.percentile(sub, config.outside_pct))
-    mean, sd = _clipped(raw[bg]) if bg.sum() > 1000 else (float(raw.mean()), float(raw.std()))
+    mean, sd = clipped if clipped is not None else (float(raw.mean()), float(raw.std()))
     side = [min(config.control_vox, s) for s in raw.shape]
     noise = np.random.default_rng(config.seed).normal(mean, max(sd, 1e-6), side).astype(np.float32)
     control_rate = float((predict(scaling(noise)) >= config.axon_p).mean())

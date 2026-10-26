@@ -1,10 +1,11 @@
 """Coarse tissue fraction of a raw tile from its flat-field brain mask (sharded Zarr v3).
 
 The masks (``<subject>_processed_*/flatfield_correction/mask/SPIM.ome.zarr/<tile>.ome.zarr``)
-exist only at full resolution (0.748 x 0.748 x 1 um), as 512^3 shards of 128 x 256 x 256
-blosc/zstd chunks. Most shards lie wholly inside or outside the brain and are byte-identical, so
-each distinct shard is decoded once and its result reused: a tile costs one read of ~2 GB and a
-few thousand decodes instead of ~21,000.
+exist at full resolution (0.748 x 0.748 x 1 um), as 512^3 shards of 128 x 256 x 256 blosc/zstd
+chunks. Most shards lie wholly inside or outside the brain and are byte-identical: shards are
+listed with their ETags and only the distinct ones (~1,500-3,700 of ~21,000) are fetched and
+decoded. Some tiles also have an 8x-downsampled copy from the flat-field step, which is read
+instead when available.
 
 Returns the fraction of mask voxels set in every ``bin``^3 cell (default 32: 32 x 24 x 24 um).
 """
@@ -23,13 +24,31 @@ from numpy.typing import NDArray
 log = logging.getLogger(__name__)
 
 
+def _distinct(fs, prefix: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Object key -> ETag under ``prefix``, and one key per distinct ETag (identical bytes)."""
+    found = fs.find(prefix, detail=True)
+    keys = {k: v["ETag"] for k, v in found.items()}
+    first: dict[str, str] = {}
+    for k, e in keys.items():
+        first.setdefault(e, k)
+    return keys, first
+
+
 def mask_fraction(
-    url: str, *, bin: int = 32, threads: int = 32
+    url: str, *, bin: int = 32, threads: int = 8, low_res: str | None = None
 ) -> tuple[NDArray[np.float32], dict]:
-    """Tissue fraction per ``bin``^3 voxels of a sharded uint8 mask (level 0)."""
+    """Tissue fraction per ``bin``^3 voxels of a sharded uint8 mask (level 0).
+
+    Shards are listed with their ETags (one listing call per 1000 objects), and only one shard per
+    distinct ETag is fetched; inner chunks with identical bytes are decoded once. ``low_res`` is
+    the flat-field step's 8x-downsampled copy of the same mask
+    (``artifacts/<tile>/<tile>_mask_low_res.zarr``), read instead when given.
+    """
     import fsspec
 
     fs = fsspec.filesystem("s3", anon=True)
+    if low_res is not None:
+        return _low_res_fraction(fs, low_res, bin, threads)
     base = url.removeprefix("s3://").rstrip("/") + "/0"
     if not fs.exists(base + "/zarr.json"):  # older masks: Zarr v2 with a full pyramid
         return _pyramid_fraction(url, bin)
@@ -41,56 +60,83 @@ def mask_fraction(
     blosc = next(c for c in sh["codecs"] if c["name"] == "blosc")
     codec = numcodecs.Blosc(cname=blosc["configuration"]["cname"])
     n_inner = shard // inner
-    n_shards = -(-shape // shard)
     nb = -(-shape // bin)
     out = np.zeros(tuple(nb), np.float32)
-    per = shard // bin
-    cache: dict[bytes, NDArray] = {}
-    keys = [
-        (z, y, x)
-        for z in range(n_shards[0])
-        for y in range(n_shards[1])
-        for x in range(n_shards[2])
-    ]
+    per, iper = shard // bin, inner // bin
+    keys, first = _distinct(fs, base + "/c")
+    inner_cache: dict[bytes, NDArray] = {}
 
-    def fetch(k):
-        try:
-            buf = fs.cat(f"{base}/c/0/0/{k[0]}/{k[1]}/{k[2]}")
-        except FileNotFoundError:
-            return k, None, None
-        h = hashlib.blake2b(buf, digest_size=16).digest()
-        if h not in cache:  # a race may decode a shard twice; harmless
-            cache[h] = decode(buf)
-        return k, h, None
-
-    def decode(buf: bytes) -> NDArray:
+    def decode(etag: str) -> tuple[str, NDArray]:
+        buf = fs.cat(first[etag])
         n = int(np.prod(n_inner))
         index = np.frombuffer(buf[-(16 * n + 4) : -4], "<u8").reshape(n, 2)
-        vol = np.zeros(tuple(shard), np.uint8)
+        frac = np.zeros(tuple(per), np.float32)
         for j, (off, size) in enumerate(index):
             if off == 2**64 - 1:  # empty inner chunk: fill value
                 continue
+            raw = buf[off : off + size]
+            h = hashlib.blake2b(raw, digest_size=16).digest()
+            if h not in inner_cache:  # a race may decode a chunk twice; harmless
+                c = np.frombuffer(codec.decode(raw), np.uint8).reshape(tuple(inner)) > 0
+                inner_cache[h] = c.reshape(iper[0], bin, iper[1], bin, iper[2], bin).mean(
+                    (1, 3, 5), dtype=np.float32
+                )
             iz, iy, ix = np.unravel_index(j, tuple(n_inner))
-            c = np.frombuffer(codec.decode(buf[off : off + size]), np.uint8).reshape(tuple(inner))
-            vol[iz * inner[0] : (iz + 1) * inner[0], iy * inner[1] : (iy + 1) * inner[1],
-                ix * inner[2] : (ix + 1) * inner[2]] = c  # fmt: skip
-        on = (vol > 0).astype(np.float32)
-        return on.reshape(per[0], bin, per[1], bin, per[2], bin).mean((1, 3, 5))
+            frac[iz * iper[0] : (iz + 1) * iper[0], iy * iper[1] : (iy + 1) * iper[1],
+                 ix * iper[2] : (ix + 1) * iper[2]] = inner_cache[h]  # fmt: skip
+        return etag, frac
 
     with ThreadPoolExecutor(threads) as ex:
-        for k, h, _ in ex.map(fetch, keys):
-            if h is None:
-                continue
-            frac = cache[h]
-            lo = np.array(k) * per
-            hi = np.minimum(lo + per, nb)
-            n = hi - lo
-            out[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]] = frac[: n[0], : n[1], : n[2]]
-    n_unique = len(cache)
-    stats = {"shards": len(keys), "distinct_shards": n_unique, "bin": bin,
-             "tissue_fraction": float(out.mean())}  # fmt: skip
+        fracs = dict(ex.map(decode, first))
+    for k, e in keys.items():
+        z, y, x = (int(v) for v in k.rsplit("/", 3)[-3:])
+        lo = np.array((z, y, x)) * per
+        hi = np.minimum(lo + per, nb)
+        n = hi - lo
+        out[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]] = fracs[e][: n[0], : n[1], : n[2]]
+    stats = {"shards": len(keys), "distinct_shards": len(first), "bin": bin,
+             "tissue_fraction": float(out.mean()), "mask_source": "full resolution"}  # fmt: skip
     log.info("Mask %s: %d shards, %d distinct, tissue %.1f%%", url.rsplit("/", 1)[-1], len(keys),
-             n_unique, 100 * out.mean())  # fmt: skip
+             len(first), 100 * out.mean())  # fmt: skip
+    return out, stats
+
+
+def _low_res_fraction(fs, url: str, bin: int, threads: int) -> tuple[NDArray[np.float32], dict]:
+    """Tissue fraction from the 8x-downsampled mask copy (regular Zarr v3 chunks, zstd)."""
+    base = url.removeprefix("s3://").rstrip("/")
+    meta = json.loads(fs.cat(base + "/zarr.json"))
+    shape = np.array(meta["shape"][-3:])
+    chunk = np.array(meta["chunk_grid"]["configuration"]["chunk_shape"][-3:])
+    if not any(c["name"] == "zstd" for c in meta["codecs"]):
+        raise ValueError(f"{url}: unexpected codecs {meta['codecs']}")
+    f = bin // 8  # low-res voxels per cell
+    nb = -(-shape * 8 // bin)
+    out = np.zeros(tuple(nb), np.float32)
+    per = chunk // f
+    keys, first = _distinct(fs, base + "/c")
+    codec = numcodecs.Zstd()
+
+    def decode(etag: str) -> tuple[str, NDArray]:
+        c = np.frombuffer(codec.decode(fs.cat(first[etag])), np.uint8).reshape(tuple(chunk)) > 0
+        return etag, c.reshape(per[0], f, per[1], f, per[2], f).mean((1, 3, 5), dtype=np.float32)
+
+    with ThreadPoolExecutor(threads) as ex:
+        fracs = dict(ex.map(decode, first))
+    for k, e in keys.items():
+        z, y, x = (int(v) for v in k.rsplit("/", 3)[-3:])
+        lo = np.array((z, y, x)) * per
+        hi = np.minimum(lo + per, nb)
+        n = hi - lo
+        out[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]] = fracs[e][: n[0], : n[1], : n[2]]
+    stats = {
+        "chunks": len(keys),
+        "distinct_chunks": len(first),
+        "bin": bin,
+        "tissue_fraction": float(out.mean()),
+        "mask_source": "low resolution (8x)",
+    }
+    log.info("Mask %s (low-res copy): %d chunks, %d distinct, tissue %.1f%%",
+             url.rsplit("/", 1)[-1], len(keys), len(first), 100 * out.mean())  # fmt: skip
     return out, stats
 
 

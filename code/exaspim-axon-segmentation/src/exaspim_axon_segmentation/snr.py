@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import zarr
 from numpy.typing import NDArray
-from scipy.ndimage import binary_dilation, binary_erosion, zoom
+from scipy.ndimage import binary_erosion, zoom
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +52,8 @@ class SnrConfig:
     save_mips: bool = True
     save_histograms: bool = True  # per block: counts of detected / background voxels per DN
     qc_normalization: bool = True  # the QC's shared-scaling check: one more prediction per block
+    save_probability: bool = True  # per tile: probability.zarr on the level grid, blocks only
+    batch: int = 4  # network tiles per GPU call (halved automatically if memory runs out)
 
 
 def _store(url: str):
@@ -162,20 +164,38 @@ class _Laps:
         self.tick = now
 
 
-def _predict(predictor, vol: NDArray[np.float32], tile: int) -> NDArray[np.float32]:
+def _predict(predictor, vol: NDArray[np.float32], tile: int, batch: int = 1) -> NDArray[np.float32]:
+    """Network probabilities for a whole volume, in ``tile``-sided tiles sent ``batch`` at a time.
+
+    Halves the batch when the GPU runs out of memory.
+    """
+    import torch
+
     from exaspim_axon_segmentation.model.unet import CONTEXT
 
     out = tile - 2 * CONTEXT
     pad = [(CONTEXT, CONTEXT + (-s) % out) for s in vol.shape]
     v = np.pad(vol, pad, mode="reflect")
     prob = np.zeros(tuple(s + (-s) % out for s in vol.shape), np.float32)
-    for z in range(0, prob.shape[0], out):
-        for y in range(0, prob.shape[1], out):
-            for x in range(0, prob.shape[2], out):
-                t = v[z : z + tile, y : y + tile, x : x + tile]
-                t0 = time.time()
-                prob[z : z + out, y : y + out, x : x + out] = predictor(t[None])[0]
-                _NETWORK_SECONDS[0] += time.time() - t0
+    starts = list(np.ndindex(*(n // out for n in prob.shape)))
+    i = 0
+    while i < len(starts):
+        group = [tuple(int(c) * out for c in s) for s in starts[i : i + batch]]
+        tiles = np.stack([v[z : z + tile, y : y + tile, x : x + tile] for z, y, x in group])
+        t0 = time.time()
+        try:
+            res = predictor(tiles)
+        except torch.OutOfMemoryError:
+            if batch == 1:
+                raise
+            torch.cuda.empty_cache()
+            batch //= 2
+            log.warning("GPU out of memory; batch now %d", batch)
+            continue
+        _NETWORK_SECONDS[0] += time.time() - t0
+        for (z, y, x), r in zip(group, res, strict=True):
+            prob[z : z + out, y : y + out, x : x + out] = r
+        i += len(group)
     return prob[: vol.shape[0], : vol.shape[1], : vol.shape[2]]
 
 
@@ -192,33 +212,34 @@ def score(raw: NDArray[np.float32], prob: NDArray[np.float32], config: SnrConfig
 
     Means and SDs use every voxel; percentiles and medians use a 2 M-voxel random subset.
     """
+    return _score(raw, prob, config)[0]
+
+
+def _score(raw, prob, config: SnrConfig) -> tuple[dict, NDArray[np.bool_]]:
+    """:func:`score` and the guarded detections (reused by the QC)."""
+    from exaspim_axon_segmentation.qc.detection_qc import _clipped, sparse_dilation
+
     axon = prob >= config.axon_p
-    guard = binary_dilation(axon, iterations=config.guard_vox) if axon.any() else axon
+    guard = sparse_dilation(axon, config.guard_vox)
     outside = np.percentile(_sub(raw), config.outside_pct)
     bg = ~guard & (raw > outside)
     out = {"axon_voxels": int(axon.sum()), "axon_fraction": float(axon.mean())}
     if axon.sum() < 50 or bg.sum() < 1000:
-        return out | {"signal": None, "background": None, "noise_sd": None, "snr": None}
-    values = raw[bg].astype(np.float64)
-    for _ in range(5):  # sigma-clip the background
-        m, sd = values.mean(), values.std()
-        values = values[np.abs(values - m) <= 3 * sd]
-    s, b, sd = float(raw[axon].mean()), float(values.mean()), float(values.std())
-    bgv = _sub(raw[bg])
+        return out | {"signal": None, "background": None, "noise_sd": None, "snr": None}, guard
+    bgv_all = raw[bg]
+    b, sd = _clipped(bgv_all)  # sigma-clipped background
+    s = float(raw[axon].mean())
+    bgv = _sub(bgv_all)
     sm, bm = float(np.median(_sub(raw[axon]))), float(np.median(bgv))
     sdm = float(1.4826 * np.median(np.abs(bgv - bm)))
     step = int(np.gcd.reduce(np.unique(raw[::4, ::4, ::4].astype(np.int64))[:5000]))
     # local background: a thin shell around the detections, so gradients/stripes far away do not
     # count as noise
-    shell = binary_dilation(guard, iterations=config.shell_vox) & ~guard
+    shell = sparse_dilation(guard, config.shell_vox) & ~guard
     shell &= raw > outside
     local = {"local_background": None, "local_noise_sd": None, "local_snr": None}
     if shell.sum() >= 1000:
-        lv = raw[shell].astype(np.float64)
-        for _ in range(5):
-            m, d = lv.mean(), lv.std()
-            lv = lv[np.abs(lv - m) <= 3 * d]
-        lb, lsd = float(lv.mean()), float(lv.std())
+        lb, lsd = _clipped(raw[shell])
         local = {
             "local_background": lb,
             "local_noise_sd": lsd,
@@ -226,7 +247,59 @@ def score(raw: NDArray[np.float32], prob: NDArray[np.float32], config: SnrConfig
         }
     whole = {"signal": s, "background": b, "noise_sd": sd, "snr": (s - b) / max(sd, 1e-6),
              "median_snr": (sm - bm) / max(sdm, 1e-6), "quantization_step": step}  # fmt: skip
-    return out | whole | local
+    return out | whole | local, guard
+
+
+def _block_boxes(shape, scale, translation, centres_um, block_um) -> list[tuple[NDArray, NDArray]]:
+    half = np.asarray(block_um) / 2
+    boxes = []
+    for centre in np.atleast_2d(centres_um):
+        lo = np.clip(np.floor((centre - half - translation) / scale).astype(int), 0, shape)
+        hi = np.clip(np.ceil((centre + half - translation) / scale).astype(int), 0, shape)
+        boxes.append((lo, hi))
+    return boxes
+
+
+def _load_block(array, lead: int, lo, hi, scale, config: SnrConfig, norm) -> dict:
+    """Read one block and normalize each variant (runs in the reader thread)."""
+    from exaspim_axon_segmentation.inference.normalize import estimate_scaling_array
+
+    t0 = time.time()
+    raw = _read(array, lead, lo, hi)
+    t_read = time.time() - t0
+    variants = {"native": (raw, scale)}
+    if config.resample_um is not None:
+        factor = scale / np.asarray(config.resample_um)
+        variants["resampled"] = (zoom(raw, factor, order=1).astype(np.float32),
+                                 np.asarray(config.resample_um))  # fmt: skip
+    out = {}
+    for name, (vol, vox) in variants.items():
+        if min(vol.shape) < 64:
+            out[name] = (vol, vox, None, f"block {vol.shape} smaller than the network input")
+            continue
+        try:
+            inside = vol > np.percentile(vol, config.outside_pct)
+            out[name] = (vol, vox, estimate_scaling_array(vol, inside, norm), None)
+        except ValueError as error:  # no foreground: nothing to scale by, so nothing to detect
+            out[name] = (vol, vox, None, error)
+    return {"raw": raw, "variants": out, "read_s": t_read, "normalize_s": time.time() - t0 - t_read}
+
+
+def prefetch_first_block(url: str, centres_um: NDArray, config: SnrConfig, weights: str, *,
+                         level: int = 0) -> dict | None:  # fmt: skip
+    """Read and normalize the first block of a tile ahead of :func:`snr_blocks` (``first=``)."""
+    from exaspim_axon_segmentation.config import InferenceConfig
+
+    if len(np.atleast_2d(centres_um)) == 0 or np.size(centres_um) == 0:
+        return None
+    array, lead, scale, translation = open_ome(url, level)
+    lo, hi = _block_boxes(np.asarray(array.shape[lead:]), scale, translation, centres_um,
+                          config.block_um)[0]  # fmt: skip
+    norm = InferenceConfig(weights=weights).normalization
+    return {"lo": lo, "hi": hi} | _load_block(array, lead, lo, hi, scale, config, norm)
+
+
+_PREDICTORS: dict = {}  # one network per (weights, device, precision), reused across tiles
 
 
 def snr_blocks(
@@ -238,18 +311,31 @@ def snr_blocks(
     *,
     level: int = 0,
     device: str = "auto",
+    first: dict | None = None,
 ) -> list[dict]:
-    """Segment and score one block around each physical centre; writes JSON and preview MIPs."""
+    """Segment and score one block around each physical centre; writes JSON and preview MIPs.
+
+    Three stages overlap: the next block is read and normalized in one thread, the network runs on
+    the current block, and the previous block is scored and written in another thread. ``first``
+    is the first block already loaded by :func:`prefetch_first_block`.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     import torch
 
     from exaspim_axon_segmentation.config import InferenceConfig
-    from exaspim_axon_segmentation.inference.normalize import estimate_scaling_array
+    from exaspim_axon_segmentation.inference.normalize import scaling_from_samples
     from exaspim_axon_segmentation.inference.predict import (
         TilePredictor,
         resolve_device,
         resolve_precision,
     )
+    from exaspim_axon_segmentation.io import Box
+    from exaspim_axon_segmentation.io.ngff import LevelTransform
+    from exaspim_axon_segmentation.io.writer import create_ngff_array
     from exaspim_axon_segmentation.model import load_model
+    from exaspim_axon_segmentation.qc.detection_qc import DetectionQcConfig, block_qc
 
     out_dir.mkdir(parents=True, exist_ok=True)
     array, lead, scale, translation = open_ome(url, level)
@@ -257,109 +343,149 @@ def snr_blocks(
     norm = InferenceConfig(weights=weights).normalization
     dev = resolve_device(device)
     precision = resolve_precision(config.precision) if dev.type == "cuda" else torch.float32
-    predictor = TilePredictor(load_model(weights), dev, precision)
-    from exaspim_axon_segmentation.inference.normalize import scaling_from_samples
-    from exaspim_axon_segmentation.qc.detection_qc import DetectionQcConfig, block_qc
+    key = (weights, str(dev), str(precision))
+    if key not in _PREDICTORS:
+        _PREDICTORS[key] = TilePredictor(load_model(weights), dev, precision)
+    gpu = threading.Lock()  # the network is called from the main and the scoring thread
 
-    half = np.asarray(config.block_um) / 2
-    boxes = []
-    for centre in np.atleast_2d(centres_um):
-        lo = np.clip(np.floor((centre - half - translation) / scale).astype(int), 0, shape)
-        hi = np.clip(np.ceil((centre + half - translation) / scale).astype(int), 0, shape)
-        boxes.append((lo, hi))
-    # one acquisition-wide normalization, from central 64^3 sub-crops pooled over all blocks
-    # (blocks are then read one at a time, so memory stays at one block)
-    t_shared = time.time()
-    pooled = []
-    for lo, hi in boxes:
-        c = (lo + hi) // 2
-        pooled.append(_read(array, lead, np.maximum(c - 32, lo), np.minimum(c + 32, hi)).ravel())
-    try:
-        shared = scaling_from_samples(np.concatenate(pooled), norm) if pooled else None
-    except ValueError:
-        shared = None
-    log.info(
-        "shared scaling: %s (%.1f s)",
-        None if shared is None else (shared.offset, shared.scale),
-        time.time() - t_shared,
-    )
+    def network(batch):
+        with gpu:
+            return _PREDICTORS[key](batch)
+
+    def predict(v):
+        return _predict(network, v, config.tile, config.batch)
+
+    boxes = _block_boxes(shape, scale, translation, centres_um, config.block_um)
+    shared = None
+    if config.qc and config.qc_normalization:
+        # one acquisition-wide normalization, from central 64^3 sub-crops pooled over all blocks
+        t_shared = time.time()
+        pooled = []
+        for lo, hi in boxes:
+            c = (lo + hi) // 2
+            pooled.append(
+                _read(array, lead, np.maximum(c - 32, lo), np.minimum(c + 32, hi)).ravel()
+            )
+        try:
+            shared = scaling_from_samples(np.concatenate(pooled), norm) if pooled else None
+        except ValueError:
+            shared = None
+        log.info(
+            "shared scaling: %s (%.1f s)",
+            None if shared is None else (shared.offset, shared.scale),
+            time.time() - t_shared,
+        )
+    probability = None
+    if config.save_probability and boxes:
+        probability = create_ngff_array(
+            str(out_dir / "probability.zarr"),
+            source=LevelTransform(tuple(scale.tolist()), tuple(translation.tolist())),
+            region=Box.from_arrays((0, 0, 0), shape),
+            chunks=(64, 128, 128),
+            dtype="uint8",
+            name="trailmap_probability",
+            attrs={"source": url, "level": level, "weights": str(weights),
+                   "note": "p x 255; only the sampled blocks are written, elsewhere 0"},
+            overwrite=True,
+        )  # fmt: skip
     qc_cfg = DetectionQcConfig()
-    rows = []
-    from concurrent.futures import ThreadPoolExecutor
+    rows: list[dict] = []
 
-    reader = ThreadPoolExecutor(1)  # the next block is read while this one is processed
-    nxt = reader.submit(_read, array, lead, *boxes[0]) if boxes else None
-    for k, centre in enumerate(np.atleast_2d(centres_um)):
-        t0 = time.time()
+    def finish(k, centre, loaded, probs, main_s):
+        """Score, QC and write one block (scoring thread)."""
+        laps = _Laps({})
         lo, hi = boxes[k]
-        raw = nxt.result()
-        laps = _Laps({"read_wait": time.time() - t0})
-        lap = laps.lap
-        net0 = _NETWORK_SECONDS[0]
-        if k + 1 < len(boxes):
-            nxt = reader.submit(_read, array, lead, *boxes[k + 1])
+        raw = loaded["raw"]
         row = {"block": k, "centre_um": np.round(centre, 1).tolist(), "lo_vox": lo.tolist(),
                "shape": list(raw.shape), "voxel_um": scale.tolist()}  # fmt: skip
-        variants = {"native": (raw, scale)}
-        if config.resample_um is not None:
-            factor = scale / np.asarray(config.resample_um)
-            variants["resampled"] = (zoom(raw, factor, order=1).astype(np.float32),
-                                     np.asarray(config.resample_um))  # fmt: skip
-        for name, (vol, vox) in variants.items():
-            if min(vol.shape) < 64:
-                row[name] = {"skipped": f"block {vol.shape} smaller than the network input"}
+        for name, (vol, vox, scaling, error) in loaded["variants"].items():
+            if scaling is None:
+                if isinstance(error, str):
+                    row[name] = {"skipped": error}
+                else:
+                    row[name] = {"skipped": f"no foreground: {error}", "verdict": "no_signal"}
+                    log.warning("block %d %s: %s; skipped", k, name, error)
                 continue
-            try:
-                inside = vol > np.percentile(vol, config.outside_pct)
-                scaling = estimate_scaling_array(vol, inside, norm)
-                lap("normalize")
-            except ValueError as error:  # no foreground: nothing to scale by, so nothing to detect
-                row[name] = {"skipped": f"no foreground: {error}", "verdict": "no_signal"}
-                log.warning("block %d %s: %s; skipped", k, name, error)
-                continue
-            prob = _predict(predictor, scaling(vol), config.tile)
-            lap("predict")
+            prob = probs[name]
             extra = {
                 "voxel_um": np.asarray(vox).tolist(),
                 "scaling": [scaling.offset, scaling.scale],
             }
-            row[name] = score(vol, prob, config) | extra
-            lap("score")
+            metrics, guard = _score(vol, prob, config)
+            row[name] = metrics | extra
+            laps.lap("score")
             if config.save_histograms:
                 det = prob >= config.axon_p
                 dn = np.clip(vol, 0, 65535).astype(np.uint16)
-                fg = np.bincount(dn[det], minlength=65536).astype(np.uint32)
-                bg = np.bincount(dn[~det], minlength=65536).astype(np.uint32)
+                fg = np.bincount(dn[det], minlength=65536)
+                bg = (np.bincount(dn.ravel(), minlength=65536) - fg).astype(np.uint32)
+                fg = fg.astype(np.uint32)
                 np.savez_compressed(out_dir / f"block{k:03d}_{name}_hist.npz", foreground=fg,
                                     background=bg)  # fmt: skip
-                lap("histograms")
+                laps.lap("histograms")
             if config.qc and name == "native":
-                row[name]["qc"] = block_qc(
-                    vol,
-                    lambda v: _predict(predictor, v, config.tile),
-                    scaling,
-                    shared_scaling=shared if config.qc_normalization else None,
-                    prob=prob,
-                    config=qc_cfg,
-                )
-                lap("qc")
+                same = qc_cfg.axon_p == config.axon_p and qc_cfg.guard_vox == config.guard_vox
+                row[name]["qc"] = block_qc(vol, predict, scaling, shared_scaling=shared,
+                                           prob=prob, config=qc_cfg,
+                                           guard=guard if same else None)  # fmt: skip
+                laps.lap("qc")
+            p8 = np.round(prob * 255).astype(np.uint8)
+            if probability is not None and name == "native":
+                probability[tuple(slice(int(a), int(b)) for a, b in zip(lo, hi, strict=True))] = p8
+                laps.lap("probability_write")
             if config.save_mips:
-                mips = {
-                    "raw_mip": vol.max(0),
-                    "prob_mip": np.round(prob.max(0) * 255).astype(np.uint8),
-                }
-                np.savez_compressed(out_dir / f"block{k:03d}_{name}.npz", **mips)
-                lap("mips")
-        row["seconds"] = round(time.time() - t0, 1)
-        laps.seconds["network_calls"] = _NETWORK_SECONDS[0] - net0  # within predict and qc
-        row["timing"] = {key: round(v, 2) for key, v in laps.seconds.items()}
+                np.savez_compressed(out_dir / f"block{k:03d}_{name}.npz", raw_mip=vol.max(0),
+                                    prob_mip=p8.max(0))  # fmt: skip
+                laps.lap("mips")
+        row["seconds"] = round(main_s, 1)  # time this block held the pipeline (read wait + GPU)
+        row["timing"] = {key: round(v, 2) for key, v in
+                         (main_timing[k] | {"read": loaded["read_s"],
+                                            "normalize": loaded["normalize_s"]}
+                          | laps.seconds).items()}  # fmt: skip
         rows.append(row)
         log.info(
             "block %d: %s",
             k,
-            {n: row[n].get("snr") for n in variants if isinstance(row.get(n), dict)},
+            {n: row[n].get("snr") for n in loaded["variants"] if isinstance(row.get(n), dict)},
         )
         summary = {"url": url, "level": level, "config": asdict(config), "blocks": rows}
         (out_dir / "snr_blocks.json").write_text(json.dumps(summary, indent=1))
-    reader.shutdown()
+
+    reader, scorer = ThreadPoolExecutor(1), ThreadPoolExecutor(1)
+    main_timing: dict[int, dict] = {}
+    try:
+        if first is not None and boxes and np.array_equal(first["lo"], boxes[0][0]):
+            nxt = reader.submit(lambda: first)
+        else:
+            nxt = (
+                reader.submit(_load_block, array, lead, *boxes[0], scale, config, norm)
+                if boxes
+                else None
+            )
+        pending = None
+        for k, centre in enumerate(np.atleast_2d(centres_um)[: len(boxes)]):
+            t0 = time.time()
+            loaded = nxt.result()
+            read_wait = time.time() - t0
+            if k + 1 < len(boxes):
+                nxt = reader.submit(_load_block, array, lead, *boxes[k + 1], scale, config, norm)
+            net0 = _NETWORK_SECONDS[0]
+            t1 = time.time()
+            probs = {
+                name: predict(scaling(vol))
+                for name, (vol, _, scaling, _) in loaded["variants"].items()
+                if scaling is not None
+            }
+            t2 = time.time()
+            if pending is not None:  # at most one block waits for scoring, so memory stays bounded
+                pending.result()
+            main_timing[k] = {"read_wait": read_wait, "predict": t2 - t1,
+                              "network_calls": _NETWORK_SECONDS[0] - net0,
+                              "score_wait": time.time() - t2}  # fmt: skip
+            pending = scorer.submit(finish, k, centre, loaded, probs, time.time() - t0)
+        if pending is not None:
+            pending.result()
+    finally:
+        reader.shutdown()
+        scorer.shutdown()
     return rows
