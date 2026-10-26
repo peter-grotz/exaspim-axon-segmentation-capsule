@@ -529,6 +529,13 @@ def snr_tiles_cmd(
     ] = None,
     max_tiles: Annotated[int, typer.Option(help="Only the first N tiles (pilot); 0 = all")] = 0,
     device: Annotated[str, typer.Option(help="auto | cuda | cpu")] = "auto",
+    tissue_tail: Annotated[
+        float,
+        typer.Option(
+            help="Skip blocks whose level-4 p99.9 - median is below this (counts): "
+            "background; replaced by the next qualifying block. 0 = off"
+        ),
+    ] = 3.0,
 ) -> None:
     """Axon SNR in ``n_blocks`` non-overlapping tissue blocks of every tile of an acquisition."""
     import json as _json
@@ -538,8 +545,16 @@ def snr_tiles_cmd(
     import fsspec
     import numpy as np
 
-    from exaspim_axon_segmentation.qc.tile_mask import blocks_from_fraction, mask_fraction
-    from exaspim_axon_segmentation.snr import SnrConfig, open_ome, prefetch_first_block, snr_blocks
+    from exaspim_axon_segmentation.qc.tile_mask import mask_fraction, ordered_blocks
+    from exaspim_axon_segmentation.snr import (
+        SnrConfig,
+        open_ome,
+        prefetch_first_block,
+        snr_blocks,
+    )
+    from exaspim_axon_segmentation.snr import (
+        tissue_tail as block_tail,
+    )
 
     fs = (
         fsspec.filesystem("s3", anon=True)
@@ -577,29 +592,57 @@ def snr_tiles_cmd(
         log.info("%d low-resolution mask copies in %s", len(low_res), art)
     bin_ = 32
 
+    def with_tissue(url, centres, fr):
+        """Keep the first ``n_blocks`` candidates (in order) that hold tissue; return the record."""
+        if tissue_tail <= 0:
+            return centres[:n_blocks], fr[:n_blocks], {}
+        keep, tails, checked = [], [], 0
+        with ThreadPoolExecutor(8) as ex:
+            for i in range(0, len(centres), 8):
+                if len(keep) >= n_blocks:
+                    break
+                idx = list(range(i, min(i + 8, len(centres))))
+                for j, t in zip(idx, ex.map(lambda j: block_tail(url, centres[j], size), idx),
+                                strict=True):  # fmt: skip
+                    checked += 1
+                    if t >= tissue_tail and len(keep) < n_blocks:
+                        keep.append(j)
+                        tails.append(round(t, 1))
+        rec = {
+            "tissue_check": {
+                "level": 4,
+                "min_tail": tissue_tail,
+                "checked": checked,
+                "rejected": checked - len(keep),
+                "accepted_tails": tails,
+            }
+        }
+        log.info("%s: tissue check kept %d of %d blocks checked", url.rsplit("/", 1)[-1],
+                 len(keep), checked)  # fmt: skip
+        k = np.asarray(keep, int)
+        return centres[k], fr[k], rec
+
     def prepare(name):
-        """Block centres for one tile: from its brain mask, else from bright structure."""
+        """Block centres for one tile: from its brain mask, else anywhere in the tile ("*")."""
         url = f"{base}/{name}"
+        _, _, sc0, tr0 = open_ome(url, 0)
+        bins = np.maximum(np.round(np.asarray(size) / (sc0 * bin_)).astype(int), 1)
         if stem(name) in masks:
             frac, st = mask_fraction(masks[stem(name)], bin=bin_, low_res=low_res.get(stem(name)))
-            _, _, sc0, tr0 = open_ome(url, 0)
-            bins = np.maximum(np.round(np.asarray(size) / (sc0 * bin_)).astype(int), 1)
-            starts, fr = blocks_from_fraction(frac, bins, n_blocks, min_tissue=min_tissue,
-                                              seed=names.index(name))  # fmt: skip
-            n_ok = len(blocks_from_fraction(frac, bins, 10**9, min_tissue=min_tissue)[0])
+            starts, fr = ordered_blocks(frac, bins, n_blocks, min_tissue=min_tissue,
+                                        seed=names.index(name))  # fmt: skip
             centres = tr0 + ((starts + bins / 2) * bin_) * sc0
+            centres, fr, rec = with_tissue(url, centres, fr)
             return centres, fr, {"selection": "brain mask", "mask": masks[stem(name)],
                                  "low_res_mask": low_res.get(stem(name)),
-                                 "n_qualifying_blocks": n_ok} | st  # fmt: skip
+                                 "n_qualifying_blocks": len(starts)} | st | rec  # fmt: skip
         # no brain mask: random non-overlapping blocks anywhere in the tile, flagged with "*"
-        _, _, sc0, tr0 = open_ome(url, 0)
         shape0 = np.asarray(open_ome(url, 0)[0].shape[-3:])
-        bins = np.maximum(np.round(np.asarray(size) / (sc0 * bin_)).astype(int), 1)
         frac = np.ones(tuple(-(-shape0 // bin_)), np.float32)
-        starts, fr = blocks_from_fraction(frac, bins, n_blocks, min_tissue=1.0,
-                                          seed=names.index(name))  # fmt: skip
+        starts, _ = ordered_blocks(frac, bins, n_blocks, min_tissue=1.0, seed=names.index(name))
         centres = tr0 + ((starts + bins / 2) * bin_) * sc0
-        return centres, np.full(len(centres), np.nan), {"selection": "unmasked*"}
+        centres, fr, rec = with_tissue(url, centres, np.full(len(centres), np.nan))
+        return centres, fr, {"selection": "unmasked*"} | rec
 
     def prepare_and_prefetch(name):  # block selection and the tile's first block, read ahead
         centres, frac, sel = prepare(name)

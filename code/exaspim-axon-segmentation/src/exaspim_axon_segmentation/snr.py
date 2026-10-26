@@ -259,6 +259,20 @@ def _score(raw, prob, config: SnrConfig) -> tuple[dict, NDArray[np.bool_]]:
     return out | whole | local, guard
 
 
+def tissue_tail(url: str, centre_um, block_um, *, level: int = 4) -> float:
+    """Bright tail of a block at a coarse level: 99.9th percentile minus median (counts).
+
+    Background (gel, outside the brain) is camera noise only, <= 2 counts at level 4 of the 5x
+    raw tiles; tissue, even dim tissue without axons, is >= 3 (checked on 210 blocks of 652781 and
+    719653). Reads ~1/64 of the block's level-2 voxels.
+    """
+    array, lead, scale, translation = open_ome(url, level)
+    shape = np.asarray(array.shape[lead:])
+    lo, hi = _block_boxes(shape, scale, translation, [centre_um], block_um)[0]
+    v = _read(array, lead, lo, hi)
+    return float(np.percentile(v, 99.9) - np.median(v)) if v.size else 0.0
+
+
 def _block_boxes(shape, scale, translation, centres_um, block_um) -> list[tuple[NDArray, NDArray]]:
     half = np.asarray(block_um) / 2
     boxes = []

@@ -174,6 +174,24 @@ def blocks_from_fraction(
     return starts, fr
 
 
+def ordered_blocks(
+    frac: NDArray[np.float32], block_bins, n: int, *, min_tissue: float = 0.9, seed: int = 0
+) -> tuple[NDArray[np.int64], NDArray[np.float32]]:
+    """Every qualifying block, in the order to try them.
+
+    First the ``n`` that :func:`blocks_from_fraction` picks (same seed, same blocks), then the rest
+    in a fixed random order, as replacements for blocks rejected later (e.g. by a tissue check).
+    """
+    starts, fr = blocks_from_fraction(frac, block_bins, 10**12, min_tissue=min_tissue)
+    if len(starts) <= n:
+        return starts, fr
+    pick = np.random.default_rng(seed).choice(len(starts), n, replace=False)
+    rest = np.setdiff1d(np.arange(len(starts)), pick)
+    rest = rest[np.random.default_rng([seed, 1]).permutation(len(rest))]
+    order = np.concatenate([pick, rest])
+    return starts[order], fr[order]
+
+
 def _pyramid_fraction(url: str, bin: int) -> tuple[NDArray[np.float32], dict]:
     """Tissue fraction from a mask pyramid level ``bin`` times coarser than level 0 (binary)."""
     from exaspim_axon_segmentation.io import NgffImage
