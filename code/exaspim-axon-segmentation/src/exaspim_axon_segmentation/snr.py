@@ -20,6 +20,7 @@ second acquisition can be scored at the same locations.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import time
@@ -259,6 +260,12 @@ def _score(raw, prob, config: SnrConfig) -> tuple[dict, NDArray[np.bool_]]:
     return out | whole | local, guard
 
 
+@functools.lru_cache(maxsize=8)
+def _open_cached(url: str, level: int):
+    """:func:`open_ome`, opened once per tile and level (metadata reads are S3 round trips)."""
+    return open_ome(url, level)
+
+
 def tissue_tail(url: str, centre_um, block_um, *, level: int = 4) -> float:
     """Bright tail of a block at a coarse level: 99.9th percentile minus median (counts).
 
@@ -266,7 +273,7 @@ def tissue_tail(url: str, centre_um, block_um, *, level: int = 4) -> float:
     raw tiles; tissue, even dim tissue without axons, is >= 3 (checked on 210 blocks of 652781 and
     719653). Reads ~1/64 of the block's level-2 voxels.
     """
-    array, lead, scale, translation = open_ome(url, level)
+    array, lead, scale, translation = _open_cached(url, level)
     shape = np.asarray(array.shape[lead:])
     lo, hi = _block_boxes(shape, scale, translation, [centre_um], block_um)[0]
     v = _read(array, lead, lo, hi)
