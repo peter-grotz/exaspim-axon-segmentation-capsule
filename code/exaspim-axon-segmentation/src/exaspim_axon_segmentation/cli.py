@@ -532,6 +532,7 @@ def snr_tiles_cmd(
 ) -> None:
     """Axon SNR in ``n_blocks`` non-overlapping tissue blocks of every tile of an acquisition."""
     import json as _json
+    import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
     import fsspec
@@ -599,11 +600,13 @@ def snr_tiles_cmd(
             url = f"{base}/{name}"
             tdir = out / stem(name)
             done = tdir / "snr_blocks.json"
+            t_wait = _time.time()
             try:
                 centres, frac, sel = futures.pop(name).result()
             except Exception as error:
                 log.warning("%s: block selection failed (%s); skipped", name, error)
                 continue
+            log.info("%s: block selection ready after %.1f s wait", name, _time.time() - t_wait)
             tdir.mkdir(parents=True, exist_ok=True)
             meta = {"tile": name, "url": url, "n_requested": n_blocks,
                     "n_tissue_blocks": len(centres),

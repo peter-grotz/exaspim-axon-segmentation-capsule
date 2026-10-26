@@ -146,6 +146,22 @@ def tissue_block_centres(
     return idx * scale + translation, frac[tuple(idx.T)] if len(idx) else np.zeros(0)
 
 
+_NETWORK_SECONDS = [0.0]  # time inside the network calls, for profiling
+
+
+class _Laps:
+    """Seconds per step of one block, for profiling."""
+
+    def __init__(self, seconds: dict[str, float]):
+        self.seconds = seconds
+        self.tick = time.time()
+
+    def lap(self, key: str) -> None:
+        now = time.time()
+        self.seconds[key] = self.seconds.get(key, 0.0) + now - self.tick
+        self.tick = now
+
+
 def _predict(predictor, vol: NDArray[np.float32], tile: int) -> NDArray[np.float32]:
     from exaspim_axon_segmentation.model.unet import CONTEXT
 
@@ -157,7 +173,9 @@ def _predict(predictor, vol: NDArray[np.float32], tile: int) -> NDArray[np.float
         for y in range(0, prob.shape[1], out):
             for x in range(0, prob.shape[2], out):
                 t = v[z : z + tile, y : y + tile, x : x + tile]
+                t0 = time.time()
                 prob[z : z + out, y : y + out, x : x + out] = predictor(t[None])[0]
+                _NETWORK_SECONDS[0] += time.time() - t0
     return prob[: vol.shape[0], : vol.shape[1], : vol.shape[2]]
 
 
@@ -251,6 +269,7 @@ def snr_blocks(
         boxes.append((lo, hi))
     # one acquisition-wide normalization, from central 64^3 sub-crops pooled over all blocks
     # (blocks are then read one at a time, so memory stays at one block)
+    t_shared = time.time()
     pooled = []
     for lo, hi in boxes:
         c = (lo + hi) // 2
@@ -259,7 +278,11 @@ def snr_blocks(
         shared = scaling_from_samples(np.concatenate(pooled), norm) if pooled else None
     except ValueError:
         shared = None
-    log.info("shared scaling: %s", None if shared is None else (shared.offset, shared.scale))
+    log.info(
+        "shared scaling: %s (%.1f s)",
+        None if shared is None else (shared.offset, shared.scale),
+        time.time() - t_shared,
+    )
     qc_cfg = DetectionQcConfig()
     rows = []
     from concurrent.futures import ThreadPoolExecutor
@@ -270,6 +293,9 @@ def snr_blocks(
         t0 = time.time()
         lo, hi = boxes[k]
         raw = nxt.result()
+        laps = _Laps({"read_wait": time.time() - t0})
+        lap = laps.lap
+        net0 = _NETWORK_SECONDS[0]
         if k + 1 < len(boxes):
             nxt = reader.submit(_read, array, lead, *boxes[k + 1])
         row = {"block": k, "centre_um": np.round(centre, 1).tolist(), "lo_vox": lo.tolist(),
@@ -286,16 +312,19 @@ def snr_blocks(
             try:
                 inside = vol > np.percentile(vol, config.outside_pct)
                 scaling = estimate_scaling_array(vol, inside, norm)
+                lap("normalize")
             except ValueError as error:  # no foreground: nothing to scale by, so nothing to detect
                 row[name] = {"skipped": f"no foreground: {error}", "verdict": "no_signal"}
                 log.warning("block %d %s: %s; skipped", k, name, error)
                 continue
             prob = _predict(predictor, scaling(vol), config.tile)
+            lap("predict")
             extra = {
                 "voxel_um": np.asarray(vox).tolist(),
                 "scaling": [scaling.offset, scaling.scale],
             }
             row[name] = score(vol, prob, config) | extra
+            lap("score")
             if config.save_histograms:
                 det = prob >= config.axon_p
                 dn = np.clip(vol, 0, 65535).astype(np.uint16)
@@ -303,6 +332,7 @@ def snr_blocks(
                 bg = np.bincount(dn[~det], minlength=65536).astype(np.uint32)
                 np.savez_compressed(out_dir / f"block{k:03d}_{name}_hist.npz", foreground=fg,
                                     background=bg)  # fmt: skip
+                lap("histograms")
             if config.qc and name == "native":
                 row[name]["qc"] = block_qc(
                     vol,
@@ -312,13 +342,17 @@ def snr_blocks(
                     prob=prob,
                     config=qc_cfg,
                 )
+                lap("qc")
             if config.save_mips:
                 mips = {
                     "raw_mip": vol.max(0),
                     "prob_mip": np.round(prob.max(0) * 255).astype(np.uint8),
                 }
                 np.savez_compressed(out_dir / f"block{k:03d}_{name}.npz", **mips)
+                lap("mips")
         row["seconds"] = round(time.time() - t0, 1)
+        laps.seconds["network_calls"] = _NETWORK_SECONDS[0] - net0  # within predict and qc
+        row["timing"] = {key: round(v, 2) for key, v in laps.seconds.items()}
         rows.append(row)
         log.info(
             "block %d: %s",
