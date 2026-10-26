@@ -53,7 +53,7 @@ class SnrConfig:
     save_histograms: bool = True  # per block: counts of detected / background voxels per DN
     qc_normalization: bool = True  # the QC's shared-scaling check: one more prediction per block
     save_probability: bool = True  # per tile: probability.zarr on the level grid, blocks only
-    batch: int = 4  # network tiles per GPU call (halved automatically if memory runs out)
+    batch: int = 1  # network tiles per GPU call (halved if memory runs out); 1 matches earlier runs
 
 
 def _store(url: str):
@@ -164,11 +164,16 @@ class _Laps:
         self.tick = now
 
 
-def _predict(predictor, vol: NDArray[np.float32], tile: int, batch: int = 1) -> NDArray[np.float32]:
+def _predict(
+    predictor, vol: NDArray[np.float32], tile: int, batch: int = 1, state: dict | None = None
+) -> NDArray[np.float32]:
     """Network probabilities for a whole volume, in ``tile``-sided tiles sent ``batch`` at a time.
 
-    Halves the batch when the GPU runs out of memory.
+    Halves the batch when the GPU runs out of memory; with ``state``, the batch that fits is kept
+    there and used by later calls.
     """
+    if state is not None:
+        batch = state.setdefault("batch", batch)
     import torch
 
     from exaspim_axon_segmentation.model.unet import CONTEXT
@@ -188,9 +193,13 @@ def _predict(predictor, vol: NDArray[np.float32], tile: int, batch: int = 1) -> 
         except torch.OutOfMemoryError:
             if batch == 1:
                 raise
+            res = None
+        if res is None:  # outside the except block, so the failed call's tensors are freed
             torch.cuda.empty_cache()
             batch //= 2
-            log.warning("GPU out of memory; batch now %d", batch)
+            if state is not None:
+                state["batch"] = batch
+            log.warning("GPU out of memory; batch now %d (kept for later blocks)", batch)
             continue
         _NETWORK_SECONDS[0] += time.time() - t0
         for (z, y, x), r in zip(group, res, strict=True):
@@ -300,6 +309,7 @@ def prefetch_first_block(url: str, centres_um: NDArray, config: SnrConfig, weigh
 
 
 _PREDICTORS: dict = {}  # one network per (weights, device, precision), reused across tiles
+_BATCH: dict = {}  # per network and tile size: the batch that fits on the GPU
 
 
 def snr_blocks(
@@ -352,8 +362,10 @@ def snr_blocks(
         with gpu:
             return _PREDICTORS[key](batch)
 
+    batch_state = _BATCH.setdefault((*key, config.tile), {})
+
     def predict(v):
-        return _predict(network, v, config.tile, config.batch)
+        return _predict(network, v, config.tile, config.batch, batch_state)
 
     boxes = _block_boxes(shape, scale, translation, centres_um, config.block_um)
     shared = None
