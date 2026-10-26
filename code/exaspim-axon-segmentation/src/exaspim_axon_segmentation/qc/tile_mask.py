@@ -31,6 +31,8 @@ def mask_fraction(
 
     fs = fsspec.filesystem("s3", anon=True)
     base = url.removeprefix("s3://").rstrip("/") + "/0"
+    if not fs.exists(base + "/zarr.json"):  # older masks: Zarr v2 with a full pyramid
+        return _pyramid_fraction(url, bin)
     meta = json.loads(fs.cat(base + "/zarr.json"))
     shape = np.array(meta["shape"][-3:])
     shard = np.array(meta["chunk_grid"]["configuration"]["chunk_shape"][-3:])
@@ -124,3 +126,21 @@ def blocks_from_fraction(
         pick = np.random.default_rng(seed).choice(len(starts), n, replace=False)
         starts, fr = starts[pick], fr[pick]
     return starts, fr
+
+
+def _pyramid_fraction(url: str, bin: int) -> tuple[NDArray[np.float32], dict]:
+    """Tissue fraction from a mask pyramid level ``bin`` times coarser than level 0 (binary)."""
+    from exaspim_axon_segmentation.io import NgffImage
+
+    m = NgffImage(url)
+    s0 = np.asarray(m.transforms[0].scale)
+    level = next(lv for lv in range(m.n_levels)
+                 if np.allclose(np.asarray(m.transforms[lv].scale) / s0, bin))  # fmt: skip
+    v = (m.read(level) > 0).astype(np.float32)
+    nb = -(-np.asarray(m.shape(0)) // bin)
+    out = np.zeros(tuple(nb), np.float32)
+    n = np.minimum(v.shape, nb)
+    out[: n[0], : n[1], : n[2]] = v[: n[0], : n[1], : n[2]]
+    log.info("Mask %s (pyramid level %d): tissue %.1f%%", url.rsplit("/", 1)[-1], level,
+             100 * out.mean())  # fmt: skip
+    return out, {"pyramid_level": level, "bin": bin, "tissue_fraction": float(out.mean())}
