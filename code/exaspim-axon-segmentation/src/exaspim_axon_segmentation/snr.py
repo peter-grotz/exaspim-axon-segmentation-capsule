@@ -50,6 +50,7 @@ class SnrConfig:
     precision: str = "auto"  # "bf16" on GPUs that have it (checked against fp32: axon Dice 0.99)
     shell_vox: int = 6  # local background: a shell this thick around the (guarded) detections
     save_mips: bool = True
+    save_histograms: bool = True  # per block: counts of detected / background voxels per DN
     qc_normalization: bool = True  # the QC's shared-scaling check: one more prediction per block
 
 
@@ -295,6 +296,13 @@ def snr_blocks(
                 "scaling": [scaling.offset, scaling.scale],
             }
             row[name] = score(vol, prob, config) | extra
+            if config.save_histograms:
+                det = prob >= config.axon_p
+                dn = np.clip(vol, 0, 65535).astype(np.uint16)
+                fg = np.bincount(dn[det], minlength=65536).astype(np.uint32)
+                bg = np.bincount(dn[~det], minlength=65536).astype(np.uint32)
+                np.savez_compressed(out_dir / f"block{k:03d}_{name}_hist.npz", foreground=fg,
+                                    background=bg)  # fmt: skip
             if config.qc and name == "native":
                 row[name]["qc"] = block_qc(
                     vol,
