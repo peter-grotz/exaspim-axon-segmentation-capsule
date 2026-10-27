@@ -196,11 +196,15 @@ if [[ "${MODE}" == "snrtiles" ]]; then
     PRECISION="${5:-bf16}"
     MASK_ROOT="${6:-none}"
     MAX_TILES="${7:-0}"
+    AXON_P="${8:-0.5}"
+    SAVE_PROB="${9:-yes}"
     mask=(); [[ "${MASK_ROOT}" != "none" ]] && mask=(--mask-root "${MASK_ROOT}")
-    echo "=== snrtiles · ${ROOT} · ${N} blocks per tile · ch ${CHANNEL} · ${PRECISION}"
+    prob=(); [[ "${SAVE_PROB}" == "no" ]] && prob=(--no-save-probability)
+    echo "=== snrtiles · ${ROOT} · ${N} blocks per tile · ch ${CHANNEL} · ${PRECISION} · p >= ${AXON_P}"
     set +e
     exaspim-axon -v snr-tiles --out "${RESULTS}/snr_tiles" --weights "${WEIGHTS}" --n-blocks "${N}" \
-        --channel "${CHANNEL}" --precision "${PRECISION}" "${mask[@]}" --max-tiles "${MAX_TILES}" --device cuda -- "${ROOT}" \
+        --channel "${CHANNEL}" --precision "${PRECISION}" "${mask[@]}" --max-tiles "${MAX_TILES}" \
+        --axon-p "${AXON_P}" "${prob[@]}" --device cuda -- "${ROOT}" \
         2>&1 | tee "${RESULTS}/snr_tiles.log"
     status="${PIPESTATUS[0]}"
     set -e

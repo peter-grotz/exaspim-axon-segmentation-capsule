@@ -523,6 +523,12 @@ def snr_tiles_cmd(
     precision: Annotated[str, typer.Option(help="auto | fp32 | bf16")] = "bf16",
     tile: Annotated[int, typer.Option(help="Network input side")] = 192,
     save_mips: Annotated[bool, typer.Option(help="Write per-block preview MIPs")] = True,
+    axon_p: Annotated[
+        float, typer.Option(help="Probability at which a voxel counts as axon")
+    ] = 0.5,
+    save_probability: Annotated[
+        bool, typer.Option(help="Write probability.zarr per tile (off when rescoring)")
+    ] = True,
     mask_root: Annotated[
         str | None,
         typer.Option(help="Flat-field brain masks (.../flatfield_correction/mask/SPIM.ome.zarr)"),
@@ -569,6 +575,7 @@ def snr_tiles_cmd(
     log.info("%d tiles in %s", len(names), root)
     size = tuple(float(v) for v in block_um.split(","))
     cfg = SnrConfig(block_um=size, precision=precision, tile=tile, save_mips=save_mips,
+                    axon_p=axon_p, save_probability=save_probability,
                     qc_normalization=False)  # fmt: skip
     stem = lambda name: name.split(".")[0]  # noqa: E731
     masks = {}

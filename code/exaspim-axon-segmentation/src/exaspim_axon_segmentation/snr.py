@@ -421,7 +421,7 @@ def snr_blocks(
                    "note": "p x 255; only the sampled blocks are written, elsewhere 0"},
             overwrite=True,
         )  # fmt: skip
-    qc_cfg = DetectionQcConfig()
+    qc_cfg = DetectionQcConfig(axon_p=config.axon_p)  # QC judges the same detections as the score
     rows: list[dict] = []
 
     def finish(k, centre, loaded, probs, main_s):
