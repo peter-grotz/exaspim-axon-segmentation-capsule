@@ -77,7 +77,7 @@ set -euo pipefail
 #            skeletonize every attached */probability.zarr (slabs from box runs, as data assets) as
 #            one volume, block by block; results in /results/slabs_skeleton/
 MODE="predict"
-if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|somata|expand|box|slabs|snr|snrpair|image|snrtiles)$ ]]; then MODE="$1"; shift; fi
+if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|somata|expand|box|slabs|snr|snrpair|image|snrtiles|rescore)$ ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -185,6 +185,20 @@ if [[ "${MODE}" == "finetune1x" ]]; then
         --raw-tiles s3://aind-open-data/exaSPIM_791116_2026-06-09_16-31-33/SPIM.ome.zarr \
         --stitching "${CODE_DIR}/snr/791116_5x_bigstitcher_affine.xml" --device cuda \
         2>&1 | tee "${RESULTS}/snr_pair.log"
+    exit 0
+fi
+
+if [[ "${MODE}" == "rescore" ]]; then
+    DATA_DIR="${1:?snr-tiles results folder (a mounted data asset) required}"
+    THRESHOLDS="${2:-0.5,0.8,0.85,0.9}"
+    echo "=== rescore · ${DATA_DIR} · thresholds ${THRESHOLDS}"
+    set +e
+    exaspim-axon -v rescore-tiles --out "${RESULTS}/rescore" --thresholds "${THRESHOLDS}" \
+        -- "${DATA_DIR}" 2>&1 | tee "${RESULTS}/rescore.log"
+    status="${PIPESTATUS[0]}"
+    set -e
+    # a failing exit discards /results on Code Ocean (log included): record the status instead
+    echo "exit ${status}" > "${RESULTS}/rescore_status.txt"
     exit 0
 fi
 

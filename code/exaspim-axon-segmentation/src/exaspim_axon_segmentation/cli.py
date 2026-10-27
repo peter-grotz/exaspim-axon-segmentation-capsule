@@ -510,6 +510,34 @@ def predict_image_cmd(
     log.info("Report: %s", report)
 
 
+@app.command("rescore-tiles")
+def rescore_tiles_cmd(
+    results: Annotated[Path, typer.Argument(help="snr-tiles output: one folder per tile")],
+    out: Annotated[Path, typer.Option(help="Output directory (one folder per tile)")],
+    thresholds: Annotated[str, typer.Option(help="Probability thresholds, comma separated")] = (
+        "0.5,0.8,0.85,0.9"
+    ),
+    workers: Annotated[int, typer.Option(help="Parallel blocks; 0 = from CPUs and memory")] = 0,
+) -> None:
+    """Rescore snr-tiles blocks at other thresholds from the saved probability maps (no network)."""
+    import json as _json
+
+    from exaspim_axon_segmentation.rescore import rescore_tile
+
+    ts = tuple(float(v) for v in thresholds.split(","))
+    tiles = sorted(p for p in results.iterdir() if (p / "snr_blocks.json").exists())
+    log.info("%d tiles in %s; thresholds %s", len(tiles), results, ts)
+    for t in tiles:
+        done = out / t.name / "snr_rescore.json"
+        if done.exists() and _json.loads(done.read_text()).get("complete"):
+            log.info("%s: done, skipping", t.name)
+            continue
+        if not (t / "probability.zarr").exists():
+            log.info("%s: no probability.zarr (no scored blocks); skipped", t.name)
+            continue
+        rescore_tile(t, out / t.name, ts, workers)
+
+
 @app.command("snr-tiles")
 def snr_tiles_cmd(
     root: Annotated[str, typer.Argument(help="Raw tile container, e.g. s3://.../SPIM/")],
