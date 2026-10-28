@@ -138,7 +138,8 @@ def blockhist_tile(tile_dir: Path, out_dir: Path, t: float = 0.9, workers: int =
         frac, st = mask_fraction(d["mask"], bin=MASK_BIN, low_res=d.get("low_res_mask"))
         mask_path = str(out_dir / "mask_inside.npy")
         np.save(mask_path, frac >= 0.5)
-        mask_info = st | {"mask_bin": MASK_BIN, "inside_rule": "cell fraction >= 0.5"}
+        mask_info = {"mask_source": "flat-field mask pyramid"} | st | {
+            "mask_bin": MASK_BIN, "inside_rule": "cell fraction >= 0.5"}  # fmt: skip
         del frac
     results = []
     if rows:
