@@ -77,7 +77,7 @@ set -euo pipefail
 #            skeletonize every attached */probability.zarr (slabs from box runs, as data assets) as
 #            one volume, block by block; results in /results/slabs_skeleton/
 MODE="predict"
-if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|somata|expand|box|slabs|snr|snrpair|image|snrtiles|rescore)$ ]]; then MODE="$1"; shift; fi
+if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|somata|expand|box|slabs|snr|snrpair|image|snrtiles|rescore|blockhist)$ ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -199,6 +199,20 @@ if [[ "${MODE}" == "rescore" ]]; then
     set -e
     # a failing exit discards /results on Code Ocean (log included): record the status instead
     echo "exit ${status}" > "${RESULTS}/rescore_status.txt"
+    exit 0
+fi
+
+if [[ "${MODE}" == "blockhist" ]]; then
+    DATA_DIR="${1:?snr-tiles results folder (a mounted data asset) required}"
+    THRESHOLD="${2:-0.9}"
+    echo "=== blockhist · ${DATA_DIR} · threshold ${THRESHOLD}"
+    set +e
+    exaspim-axon -v block-hist --out "${RESULTS}/blockhist" --threshold "${THRESHOLD}" \
+        -- "${DATA_DIR}" 2>&1 | tee "${RESULTS}/blockhist.log"
+    status="${PIPESTATUS[0]}"
+    set -e
+    # a failing exit discards /results on Code Ocean (log included): record the status instead
+    echo "exit ${status}" > "${RESULTS}/blockhist_status.txt"
     exit 0
 fi
 

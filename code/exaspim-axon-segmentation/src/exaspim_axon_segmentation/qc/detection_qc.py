@@ -84,6 +84,23 @@ def sparse_dilation(mask: NDArray[np.bool_], iterations: int, cell: int = 64) ->
     return out
 
 
+def clipped_counts(counts: NDArray) -> tuple[float, float]:
+    """:func:`_clipped` of the integer values whose counts are ``counts`` (index = value)."""
+    counts = np.asarray(counts).astype(np.float64)
+    v = np.arange(counts.size, dtype=np.float64)
+    keep = counts > 0
+    for _ in range(5):
+        c, x = counts[keep], v[keep]
+        n = c.sum()
+        m = (c * x).sum() / n
+        sd = np.sqrt((c * (x - m) ** 2).sum() / n)
+        keep &= np.abs(v - m) <= 3 * sd
+    c, x = counts[keep], v[keep]
+    n = c.sum()
+    m = (c * x).sum() / n
+    return float(m), float(np.sqrt((c * (x - m) ** 2).sum() / n))
+
+
 def _clipped(values: NDArray) -> tuple[float, float]:
     """Mean and SD after 5 rounds of 3-SD clipping.
 
@@ -97,19 +114,7 @@ def _clipped(values: NDArray) -> tuple[float, float]:
         and values.max() < 2**20
         and np.all(values == np.floor(values))
     ):
-        counts = np.bincount(values.astype(np.int64)).astype(np.float64)
-        v = np.arange(counts.size, dtype=np.float64)
-        keep = counts > 0
-        for _ in range(5):
-            c, x = counts[keep], v[keep]
-            n = c.sum()
-            m = (c * x).sum() / n
-            sd = np.sqrt((c * (x - m) ** 2).sum() / n)
-            keep &= np.abs(v - m) <= 3 * sd
-        c, x = counts[keep], v[keep]
-        n = c.sum()
-        m = (c * x).sum() / n
-        return float(m), float(np.sqrt((c * (x - m) ** 2).sum() / n))
+        return clipped_counts(np.bincount(values.astype(np.int64)))
     values = values.astype(np.float64)
     for _ in range(5):
         m, sd = values.mean(), values.std()

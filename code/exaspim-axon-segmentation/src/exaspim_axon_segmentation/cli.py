@@ -538,6 +538,31 @@ def rescore_tiles_cmd(
         rescore_tile(t, out / t.name, ts, workers)
 
 
+@app.command("block-hist")
+def block_hist_cmd(
+    results: Annotated[Path, typer.Argument(help="snr-tiles output: one folder per tile")],
+    out: Annotated[Path, typer.Option(help="Output directory (one folder per tile)")],
+    threshold: Annotated[float, typer.Option(help="Axon probability threshold")] = 0.9,
+    workers: Annotated[int, typer.Option(help="Parallel blocks; 0 = from CPUs and memory")] = 0,
+) -> None:
+    """Raw-intensity histograms per voxel class (axon distance ring x brain mask) of every block."""
+    import json as _json
+
+    from exaspim_axon_segmentation.blockhist import blockhist_tile
+
+    tiles = sorted(p for p in results.iterdir() if (p / "snr_blocks.json").exists())
+    log.info("%d tiles in %s; threshold %g", len(tiles), results, threshold)
+    for t in tiles:
+        done = out / t.name / "block_classhist.json"
+        if done.exists() and _json.loads(done.read_text()).get("complete"):
+            log.info("%s: done, skipping", t.name)
+            continue
+        if not (t / "probability.zarr").exists():
+            log.info("%s: no probability.zarr (no scored blocks); skipped", t.name)
+            continue
+        blockhist_tile(t, out / t.name, threshold, workers)
+
+
 @app.command("snr-tiles")
 def snr_tiles_cmd(
     root: Annotated[str, typer.Argument(help="Raw tile container, e.g. s3://.../SPIM/")],
