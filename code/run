@@ -73,7 +73,7 @@ set -euo pipefail
 #            axon SNR in N_BLOCKS (default 40) non-overlapping tissue blocks (>= 90% tissue, built-in
 #            mask) of every tile in ROOT (a raw SPIM container), at level 2; results in
 #            /results/snr_tiles/<tile>/snr_blocks.json
-#   slap2 [STEPS] [MAX_MINUTES] [START_WEIGHTS]
+#   slap2 [STEPS] [MAX_MINUTES] [START_WEIGHTS]   (START_WEIGHTS: a path, or an https URL to download)
 #            fine-tune on the SLAP2 878030 DMD1 structural stack (in vivo 2p, one partially traced neuron) at
 #            1 um: labels from code/slap2/ (every trace voxel positive, untraced structure ignored, only
 #            confident background as background; scripts/slap2_labels.py), every voxel trains (validation is
@@ -170,8 +170,14 @@ if [[ "${MODE}" == "slap2" ]]; then
     SCRATCH="$(mktemp -d)"
     out="${RESULTS}/slap2"
     mkdir -p "${out}"
-    echo "=== slap2 · ${STEPS} steps / ${MAX_MINUTES} min · from ${START}"
     set +e  # a failing exit discards /results on Code Ocean: record each step's status instead
+    if [[ "${START}" == http* ]]; then  # a signed URL to a .safetensors (when mounting the asset fails)
+        python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" \
+            "${START}" "${SCRATCH}/start.safetensors"
+        START="${SCRATCH}/start.safetensors"
+        md5sum "${START}" | tee "${out}/start_weights.md5"
+    fi
+    echo "=== slap2 · ${STEPS} steps / ${MAX_MINUTES} min · from ${START}"
     python -c "import s3fs, sys; s3fs.S3FileSystem(anon=True).get(sys.argv[1], sys.argv[2])" \
         "${TIF}" "${SCRATCH}/reference.tif"
     status=("download=$?")
