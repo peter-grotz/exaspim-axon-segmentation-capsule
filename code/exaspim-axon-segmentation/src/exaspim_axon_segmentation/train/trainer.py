@@ -390,8 +390,10 @@ def build_volumes(
     """Load training volumes and assign roles.
 
     Region volumes (traced lobes) are split along x: the last ``config.val_fraction`` of their
-    axon voxels is validation. Blocks train unless their brain is held out, in which case they are
-    validation only. Region volumes together receive ``region_share`` of the training patches.
+    axon voxels is validation. Cubes marked ``split: "all"`` (a single partially traced stack)
+    train on every voxel and validate on the same volume (in-sample). Blocks train unless their
+    brain is held out, in which case they are validation only. Region volumes together receive
+    ``region_share`` of the training patches.
     """
     from exaspim_axon_segmentation.config import NormalizationConfig
     from exaspim_axon_segmentation.inference.normalize import estimate_scaling_array
@@ -402,7 +404,12 @@ def build_volumes(
         raw, labels, info = open_training_volume(d)
         scaling = estimate_scaling_array(raw, labels != Label.IGNORE, NormalizationConfig())
         width = raw.shape[2]
-        if "cube" in info:  # coarse trace cubes: split recorded per cube
+        if "cube" in info and info.get("split") == "all":  # all voxels train; in-sample validation
+            volumes.append(TrainingVolume(
+                name=f"{info['brain']}/{info['cube']}", raw=raw, labels=labels, scaling=scaling,
+                train_x=(0, width), val_x=(0, width), group=f"{info['brain']}-{info['cube']}",
+            ))  # fmt: skip
+        elif "cube" in info:  # coarse trace cubes: split recorded per cube
             val = info.get("split") == "val"
             volumes.append(TrainingVolume(
                 name=f"{info['brain']}/{info['cube']}", raw=raw, labels=labels, scaling=scaling,
