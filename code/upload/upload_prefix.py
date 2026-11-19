@@ -5,7 +5,10 @@ stops before writing anything when DEST already holds any object, and stops agai
 appears while copying. Only ``put`` is used: no sync, no delete. Writes
 /results/upload/manifest.json (every file with its size) and verifies each upload's size afterwards.
 
-Usage: python upload_prefix.py <s3://bucket/prefix> <dry|write> <SOURCE> [<SOURCE> ...]
+Modes ``add-dry`` / ``add`` allow a prefix that already holds files, but stop before writing if any
+planned target exists.
+
+Usage: python upload_prefix.py <s3://bucket/prefix> <dry|write|add-dry|add> <SOURCE> [<SOURCE> ...]
 """
 
 import json
@@ -16,8 +19,9 @@ from pathlib import Path
 
 import s3fs
 
+MODES = ("dry", "write", "add-dry", "add")
 dest, mode, specs = sys.argv[1].rstrip("/"), sys.argv[2], sys.argv[3:]
-if not dest.startswith("s3://") or dest.count("/") < 3 or mode not in ("dry", "write") or not specs:
+if not dest.startswith("s3://") or dest.count("/") < 3 or mode not in MODES or not specs:
     sys.exit(__doc__)
 fs = s3fs.S3FileSystem()
 plan = []
@@ -40,12 +44,20 @@ manifest = {"dest": dest, "mode": mode, "files": len(plan), "bytes": sum(s for *
 print(f"{len(plan)} files, {manifest['bytes'] / 1e9:.2f} GB -> {dest}/", flush=True)
 
 existing = fs.find(dest + "/") + ([dest] if fs.isfile(dest) else [])
-if existing:  # never touch a prefix that already has content
+if mode.startswith("add"):  # the prefix may hold files, but none of the planned targets
+    taken = sorted(set(t.removeprefix("s3://") for t in targets) & set(existing))
+    if taken:
+        print(f"STOP: {len(taken)} targets already exist, e.g. {taken[:5]}")
+        print("nothing written")
+        sys.exit(3)
+    print(f"destination holds {len(existing)} objects; none of the {len(plan)} targets exist")
+elif existing:  # never touch a prefix that already has content
     print(f"STOP: {dest}/ already holds {len(existing)} objects, e.g. {existing[:5]}")
     print("nothing written")
     sys.exit(3)
-print("destination is empty")
-if mode == "dry":
+else:
+    print("destination is empty")
+if mode.endswith("dry"):
     print("dry run: nothing written")
     sys.exit(0)
 

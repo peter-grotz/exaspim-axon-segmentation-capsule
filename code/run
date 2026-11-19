@@ -79,7 +79,7 @@ set -euo pipefail
 #            confident background as background; scripts/slap2_labels.py), every voxel trains (validation is
 #            in-sample); then predicts the whole stack with the start and the fine-tuned weights;
 #            results in /results/slap2/
-#   upload DEST dry|write SOURCE...   (SOURCE: <dir under /data>=<sub path>, "=" alone for the root)
+#   upload DEST dry|write|add-dry|add SOURCE...   (SOURCE: <dir under /data>=<sub path>, "=" alone for the root)
 #            copy attached folders into a NEW s3 prefix DEST; stops before writing if DEST holds anything,
 #            never overwrites or deletes; "dry" only lists; results in /results/upload/manifest.json
 #   slabs [WORKERS] [RELAXED]
