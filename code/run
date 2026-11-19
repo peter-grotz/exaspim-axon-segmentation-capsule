@@ -79,11 +79,14 @@ set -euo pipefail
 #            confident background as background; scripts/slap2_labels.py), every voxel trains (validation is
 #            in-sample); then predicts the whole stack with the start and the fine-tuned weights;
 #            results in /results/slap2/
+#   upload DEST dry|write SOURCE...   (SOURCE: <dir under /data>=<sub path>, "=" alone for the root)
+#            copy attached folders into a NEW s3 prefix DEST; stops before writing if DEST holds anything,
+#            never overwrites or deletes; "dry" only lists; results in /results/upload/manifest.json
 #   slabs [WORKERS] [RELAXED]
 #            skeletonize every attached */probability.zarr (slabs from box runs, as data assets) as
 #            one volume, block by block; results in /results/slabs_skeleton/
 MODE="predict"
-if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|slap2|somata|expand|box|slabs|snr|snrpair|image|snrtiles|rescore|blockhist)$ ]]; then MODE="$1"; shift; fi
+if [[ "${1:-}" =~ ^(predict|finetune|finetune1x|slap2|somata|expand|box|slabs|snr|snrpair|image|snrtiles|rescore|blockhist|upload)$ ]]; then MODE="$1"; shift; fi
 
 ASSET="${1:-s3://aind-open-data/exaSPIM_851474_2026-07-10_15-23-22_processed_2026-07-21_13-59-36}"
 REGIONS="${2:-MD}"
@@ -307,6 +310,16 @@ if [[ "${MODE}" == "image" ]]; then
     set -e
     # a failing exit discards /results on Code Ocean (log included): record the status instead
     echo "exit ${status}" > "${RESULTS}/image_status.txt"
+    exit 0
+fi
+
+if [[ "${MODE}" == "upload" ]]; then
+    find /data -maxdepth 3 > "${RESULTS}/data_tree.txt" 2>&1 || true
+    set +e
+    /opt/axon-venv/bin/python "${CODE_DIR}/upload/upload_prefix.py" "$@" 2>&1 | tee "${RESULTS}/upload.log"
+    status="${PIPESTATUS[0]}"
+    set -e
+    echo "exit ${status}" > "${RESULTS}/upload_status.txt"
     exit 0
 fi
 
